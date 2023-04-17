@@ -26,7 +26,7 @@
 //! let mut signer = Signer::new(MessageDigest::sha256(), &keypair).unwrap();
 //! signer.update(data).unwrap();
 //! signer.update(data2).unwrap();
-//! let signature = signer.finish().unwrap();
+//! let signature = signer.sign_to_vec().unwrap();
 //!
 //! // Verify the data
 //! let mut verifier = Verifier::new(MessageDigest::sha256(), &keypair).unwrap();
@@ -34,55 +34,91 @@
 //! verifier.update(data2).unwrap();
 //! assert!(verifier.verify(&signature).unwrap());
 //! ```
-//!
-//! Compute an HMAC:
-//!
-//! ```rust
-//! use openssl::hash::MessageDigest;
-//! use openssl::memcmp;
-//! use openssl::pkey::PKey;
-//! use openssl::sign::Signer;
-//!
-//! // Create a PKey
-//! let key = PKey::hmac(b"my secret").unwrap();
-//!
-//! let data = b"hello, world!";
-//! let data2 = b"hola, mundo!";
-//!
-//! // Compute the HMAC
-//! let mut signer = Signer::new(MessageDigest::sha256(), &key).unwrap();
-//! signer.update(data).unwrap();
-//! signer.update(data2).unwrap();
-//! let hmac = signer.sign_to_vec().unwrap();
-//!
-//! // `Verifier` cannot be used with HMACs; use the `memcmp::eq` function instead
-//! //
-//! // Do not simply check for equality with `==`!
-//! # let target = hmac.clone();
-//! assert!(memcmp::eq(&hmac, &target));
-//! ```
-use ffi;
+
+#![cfg_attr(
+    not(boringssl),
+    doc = r#"\
+
+Compute an HMAC:
+
+```rust
+use openssl::hash::MessageDigest;
+use openssl::memcmp;
+use openssl::pkey::PKey;
+use openssl::sign::Signer;
+
+// Create a PKey
+let key = PKey::hmac(b"my secret").unwrap();
+
+let data = b"hello, world!";
+let data2 = b"hola, mundo!";
+
+// Compute the HMAC
+let mut signer = Signer::new(MessageDigest::sha256(), &key).unwrap();
+signer.update(data).unwrap();
+signer.update(data2).unwrap();
+let hmac = signer.sign_to_vec().unwrap();
+
+// `Verifier` cannot be used with HMACs; use the `memcmp::eq` function instead
+//
+// Do not simply check for equality with `==`!
+# let target = hmac.clone();
+assert!(memcmp::eq(&hmac, &target));
+```"#
+)]
+
+use cfg_if::cfg_if;
 use foreign_types::ForeignTypeRef;
+use libc::c_int;
 use std::io::{self, Write};
 use std::marker::PhantomData;
 use std::ptr;
 
-use {cvt, cvt_p};
-use hash::MessageDigest;
-use pkey::{PKeyCtxRef, PKeyRef};
-use error::ErrorStack;
+use crate::error::ErrorStack;
+use crate::hash::MessageDigest;
+use crate::pkey::{HasPrivate, HasPublic, PKeyRef};
+use crate::rsa::Padding;
+use crate::{cvt, cvt_p};
 
-#[cfg(ossl110)]
-use ffi::{EVP_MD_CTX_free, EVP_MD_CTX_new};
-#[cfg(any(ossl101, ossl102))]
-use ffi::{EVP_MD_CTX_create as EVP_MD_CTX_new, EVP_MD_CTX_destroy as EVP_MD_CTX_free};
+cfg_if! {
+    if #[cfg(ossl110)] {
+        use ffi::{EVP_MD_CTX_free, EVP_MD_CTX_new};
+    } else {
+        use ffi::{EVP_MD_CTX_create as EVP_MD_CTX_new, EVP_MD_CTX_destroy as EVP_MD_CTX_free};
+    }
+}
+
+/// Salt lengths that must be used with `set_rsa_pss_saltlen`.
+pub struct RsaPssSaltlen(c_int);
+
+impl RsaPssSaltlen {
+    /// Returns the integer representation of `RsaPssSaltlen`.
+    fn as_raw(&self) -> c_int {
+        self.0
+    }
+
+    /// Sets the salt length to the given value.
+    pub fn custom(val: c_int) -> RsaPssSaltlen {
+        RsaPssSaltlen(val)
+    }
+
+    /// The salt length is set to the digest length.
+    /// Corresponds to the special value `-1`.
+    pub const DIGEST_LENGTH: RsaPssSaltlen = RsaPssSaltlen(-1);
+    /// The salt length is set to the maximum permissible value.
+    /// Corresponds to the special value `-2`.
+    pub const MAXIMUM_LENGTH: RsaPssSaltlen = RsaPssSaltlen(-2);
+}
 
 /// A type which computes cryptographic signatures of data.
 pub struct Signer<'a> {
     md_ctx: *mut ffi::EVP_MD_CTX,
-    pkey_ctx: *mut ffi::EVP_PKEY_CTX,
-    pkey_pd: PhantomData<&'a PKeyRef>,
+    pctx: *mut ffi::EVP_PKEY_CTX,
+    _p: PhantomData<&'a ()>,
 }
+
+unsafe impl<'a> Sync for Signer<'a> {}
+unsafe impl<'a> Send for Signer<'a> {}
 
 impl<'a> Drop for Signer<'a> {
     fn drop(&mut self) {
@@ -93,13 +129,45 @@ impl<'a> Drop for Signer<'a> {
     }
 }
 
+#[allow(clippy::len_without_is_empty)]
 impl<'a> Signer<'a> {
     /// Creates a new `Signer`.
+    ///
+    /// This cannot be used with Ed25519 or Ed448 keys. Please refer to
+    /// `new_without_digest`.
     ///
     /// OpenSSL documentation at [`EVP_DigestSignInit`].
     ///
     /// [`EVP_DigestSignInit`]: https://www.openssl.org/docs/manmaster/man3/EVP_DigestSignInit.html
-    pub fn new(type_: MessageDigest, pkey: &'a PKeyRef) -> Result<Signer<'a>, ErrorStack> {
+    pub fn new<T>(type_: MessageDigest, pkey: &'a PKeyRef<T>) -> Result<Signer<'a>, ErrorStack>
+    where
+        T: HasPrivate,
+    {
+        Self::new_intern(Some(type_), pkey)
+    }
+
+    /// Creates a new `Signer` without a digest.
+    ///
+    /// This is the only way to create a `Verifier` for Ed25519 or Ed448 keys.
+    /// It can also be used to create a CMAC.
+    ///
+    /// OpenSSL documentation at [`EVP_DigestSignInit`].
+    ///
+    /// [`EVP_DigestSignInit`]: https://www.openssl.org/docs/manmaster/man3/EVP_DigestSignInit.html
+    pub fn new_without_digest<T>(pkey: &'a PKeyRef<T>) -> Result<Signer<'a>, ErrorStack>
+    where
+        T: HasPrivate,
+    {
+        Self::new_intern(None, pkey)
+    }
+
+    fn new_intern<T>(
+        type_: Option<MessageDigest>,
+        pkey: &'a PKeyRef<T>,
+    ) -> Result<Signer<'a>, ErrorStack>
+    where
+        T: HasPrivate,
+    {
         unsafe {
             ffi::init();
 
@@ -108,7 +176,7 @@ impl<'a> Signer<'a> {
             let r = ffi::EVP_DigestSignInit(
                 ctx,
                 &mut pctx,
-                type_.as_ptr(),
+                type_.map(|t| t.as_ptr()).unwrap_or(ptr::null()),
                 ptr::null_mut(),
                 pkey.as_ptr(),
             );
@@ -121,23 +189,80 @@ impl<'a> Signer<'a> {
 
             Ok(Signer {
                 md_ctx: ctx,
-                pkey_ctx: pctx,
-                pkey_pd: PhantomData,
+                pctx,
+                _p: PhantomData,
             })
         }
     }
 
-    /// Returns a shared reference to the `PKeyCtx` associated with the `Signer`.
-    pub fn pkey_ctx(&self) -> &PKeyCtxRef {
-        unsafe { PKeyCtxRef::from_ptr(self.pkey_ctx) }
+    /// Returns the RSA padding mode in use.
+    ///
+    /// This is only useful for RSA keys.
+    ///
+    /// This corresponds to `EVP_PKEY_CTX_get_rsa_padding`.
+    pub fn rsa_padding(&self) -> Result<Padding, ErrorStack> {
+        unsafe {
+            let mut pad = 0;
+            cvt(ffi::EVP_PKEY_CTX_get_rsa_padding(self.pctx, &mut pad))
+                .map(|_| Padding::from_raw(pad))
+        }
     }
 
-    /// Returns a mutable reference to the `PKeyCtx` associated with the `Signer`.
-    pub fn pkey_ctx_mut(&mut self) -> &mut PKeyCtxRef {
-        unsafe { PKeyCtxRef::from_ptr_mut(self.pkey_ctx) }
+    /// Sets the RSA padding mode.
+    ///
+    /// This is only useful for RSA keys.
+    ///
+    /// This corresponds to [`EVP_PKEY_CTX_set_rsa_padding`].
+    ///
+    /// [`EVP_PKEY_CTX_set_rsa_padding`]: https://www.openssl.org/docs/manmaster/crypto/EVP_PKEY_CTX_set_rsa_padding.html
+    pub fn set_rsa_padding(&mut self, padding: Padding) -> Result<(), ErrorStack> {
+        unsafe {
+            cvt(ffi::EVP_PKEY_CTX_set_rsa_padding(
+                self.pctx,
+                padding.as_raw(),
+            ))
+            .map(|_| ())
+        }
+    }
+
+    /// Sets the RSA PSS salt length.
+    ///
+    /// This is only useful for RSA keys.
+    ///
+    /// This corresponds to [`EVP_PKEY_CTX_set_rsa_pss_saltlen`].
+    ///
+    /// [`EVP_PKEY_CTX_set_rsa_pss_saltlen`]: https://www.openssl.org/docs/manmaster/crypto/EVP_PKEY_CTX_set_rsa_pss_saltlen.html
+    pub fn set_rsa_pss_saltlen(&mut self, len: RsaPssSaltlen) -> Result<(), ErrorStack> {
+        unsafe {
+            cvt(ffi::EVP_PKEY_CTX_set_rsa_pss_saltlen(
+                self.pctx,
+                len.as_raw(),
+            ))
+            .map(|_| ())
+        }
+    }
+
+    /// Sets the RSA MGF1 algorithm.
+    ///
+    /// This is only useful for RSA keys.
+    ///
+    /// This corresponds to [`EVP_PKEY_CTX_set_rsa_mgf1_md`].
+    ///
+    /// [`EVP_PKEY_CTX_set_rsa_mgf1_md`]: https://www.openssl.org/docs/manmaster/man7/RSA-PSS.html
+    pub fn set_rsa_mgf1_md(&mut self, md: MessageDigest) -> Result<(), ErrorStack> {
+        unsafe {
+            cvt(ffi::EVP_PKEY_CTX_set_rsa_mgf1_md(
+                self.pctx,
+                md.as_ptr() as *mut _,
+            ))
+            .map(|_| ())
+        }
     }
 
     /// Feeds more data into the `Signer`.
+    ///
+    /// Please note that PureEdDSA (Ed25519 and Ed448 keys) do not support streaming.
+    /// Use `sign_oneshot` instead.
     ///
     /// OpenSSL documentation at [`EVP_DigestUpdate`].
     ///
@@ -148,7 +273,8 @@ impl<'a> Signer<'a> {
                 self.md_ctx,
                 buf.as_ptr() as *const _,
                 buf.len(),
-            )).map(|_| ())
+            ))
+            .map(|_| ())
         }
     }
 
@@ -159,14 +285,34 @@ impl<'a> Signer<'a> {
     ///
     /// OpenSSL documentation at [`EVP_DigestSignFinal`].
     ///
-    /// [`EVP_DigestSignFinal`]: https://www.openssl.org/docs/man1.1.0/crypto/EVP_DigestSignFinal.html
+    /// [`EVP_DigestSignFinal`]: https://www.openssl.org/docs/manmaster/crypto/EVP_DigestSignFinal.html
     pub fn len(&self) -> Result<usize, ErrorStack> {
+        self.len_intern()
+    }
+
+    #[cfg(all(not(ossl111), not(boringssl), not(libressl370)))]
+    fn len_intern(&self) -> Result<usize, ErrorStack> {
         unsafe {
             let mut len = 0;
             cvt(ffi::EVP_DigestSignFinal(
                 self.md_ctx,
                 ptr::null_mut(),
                 &mut len,
+            ))?;
+            Ok(len)
+        }
+    }
+
+    #[cfg(any(ossl111, boringssl, libressl370))]
+    fn len_intern(&self) -> Result<usize, ErrorStack> {
+        unsafe {
+            let mut len = 0;
+            cvt(ffi::EVP_DigestSign(
+                self.md_ctx,
+                ptr::null_mut(),
+                &mut len,
+                ptr::null(),
+                0,
             ))?;
             Ok(len)
         }
@@ -179,7 +325,7 @@ impl<'a> Signer<'a> {
     ///
     /// OpenSSL documentation at [`EVP_DigestSignFinal`].
     ///
-    /// [`EVP_DigestSignFinal`]: https://www.openssl.org/docs/man1.1.0/crypto/EVP_DigestSignFinal.html
+    /// [`EVP_DigestSignFinal`]: https://www.openssl.org/docs/manmaster/crypto/EVP_DigestSignFinal.html
     pub fn sign(&self, buf: &mut [u8]) -> Result<usize, ErrorStack> {
         unsafe {
             let mut len = buf.len();
@@ -203,9 +349,46 @@ impl<'a> Signer<'a> {
         Ok(buf)
     }
 
-    #[deprecated(since = "0.9.23", note = "renamed to sign_to_vec")]
-    pub fn finish(&self) -> Result<Vec<u8>, ErrorStack> {
-        self.sign_to_vec()
+    /// Signs the data in `data_buf` and writes the signature into the buffer `sig_buf`, returning the
+    /// number of bytes written.
+    ///
+    /// For PureEdDSA (Ed25519 and Ed448 keys), this is the only way to sign data.
+    ///
+    /// This method will fail if the buffer is not large enough for the signature. Use the `len`
+    /// method to get an upper bound on the required size.
+    ///
+    /// OpenSSL documentation at [`EVP_DigestSign`].
+    ///
+    /// [`EVP_DigestSign`]: https://www.openssl.org/docs/man1.1.1/man3/EVP_DigestSign.html
+    #[cfg(any(ossl111, boringssl, libressl370))]
+    pub fn sign_oneshot(
+        &mut self,
+        sig_buf: &mut [u8],
+        data_buf: &[u8],
+    ) -> Result<usize, ErrorStack> {
+        unsafe {
+            let mut sig_len = sig_buf.len();
+            cvt(ffi::EVP_DigestSign(
+                self.md_ctx,
+                sig_buf.as_mut_ptr() as *mut _,
+                &mut sig_len,
+                data_buf.as_ptr() as *const _,
+                data_buf.len(),
+            ))?;
+            Ok(sig_len)
+        }
+    }
+
+    /// Returns the signature.
+    ///
+    /// This is a simple convenience wrapper over `len` and `sign_oneshot`.
+    #[cfg(any(ossl111, boringssl, libressl370))]
+    pub fn sign_oneshot_to_vec(&mut self, data_buf: &[u8]) -> Result<Vec<u8>, ErrorStack> {
+        let mut sig_buf = vec![0; self.len()?];
+        let len = self.sign_oneshot(&mut sig_buf, data_buf)?;
+        // The advertised length is not always equal to the real length for things like DSA
+        sig_buf.truncate(len);
+        Ok(sig_buf)
     }
 }
 
@@ -220,11 +403,16 @@ impl<'a> Write for Signer<'a> {
     }
 }
 
+/// A type which can be used to verify the integrity and authenticity
+/// of data given the signature.
 pub struct Verifier<'a> {
     md_ctx: *mut ffi::EVP_MD_CTX,
-    pkey_ctx: *mut ffi::EVP_PKEY_CTX,
-    pkey_pd: PhantomData<&'a PKeyRef>,
+    pctx: *mut ffi::EVP_PKEY_CTX,
+    pkey_pd: PhantomData<&'a ()>,
 }
+
+unsafe impl<'a> Sync for Verifier<'a> {}
+unsafe impl<'a> Send for Verifier<'a> {}
 
 impl<'a> Drop for Verifier<'a> {
     fn drop(&mut self) {
@@ -239,10 +427,40 @@ impl<'a> Drop for Verifier<'a> {
 impl<'a> Verifier<'a> {
     /// Creates a new `Verifier`.
     ///
+    /// This cannot be used with Ed25519 or Ed448 keys. Please refer to
+    /// [`Verifier::new_without_digest`].
+    ///
     /// OpenSSL documentation at [`EVP_DigestVerifyInit`].
     ///
     /// [`EVP_DigestVerifyInit`]: https://www.openssl.org/docs/manmaster/man3/EVP_DigestVerifyInit.html
-    pub fn new(type_: MessageDigest, pkey: &'a PKeyRef) -> Result<Verifier<'a>, ErrorStack> {
+    pub fn new<T>(type_: MessageDigest, pkey: &'a PKeyRef<T>) -> Result<Verifier<'a>, ErrorStack>
+    where
+        T: HasPublic,
+    {
+        Verifier::new_intern(Some(type_), pkey)
+    }
+
+    /// Creates a new `Verifier` without a digest.
+    ///
+    /// This is the only way to create a `Verifier` for Ed25519 or Ed448 keys.
+    ///
+    /// OpenSSL documentation at [`EVP_DigestVerifyInit`].
+    ///
+    /// [`EVP_DigestVerifyInit`]: https://www.openssl.org/docs/manmaster/man3/EVP_DigestVerifyInit.html
+    pub fn new_without_digest<T>(pkey: &'a PKeyRef<T>) -> Result<Verifier<'a>, ErrorStack>
+    where
+        T: HasPublic,
+    {
+        Verifier::new_intern(None, pkey)
+    }
+
+    fn new_intern<T>(
+        type_: Option<MessageDigest>,
+        pkey: &'a PKeyRef<T>,
+    ) -> Result<Verifier<'a>, ErrorStack>
+    where
+        T: HasPublic,
+    {
         unsafe {
             ffi::init();
 
@@ -251,7 +469,7 @@ impl<'a> Verifier<'a> {
             let r = ffi::EVP_DigestVerifyInit(
                 ctx,
                 &mut pctx,
-                type_.as_ptr(),
+                type_.map(|t| t.as_ptr()).unwrap_or(ptr::null()),
                 ptr::null_mut(),
                 pkey.as_ptr(),
             );
@@ -264,23 +482,80 @@ impl<'a> Verifier<'a> {
 
             Ok(Verifier {
                 md_ctx: ctx,
-                pkey_ctx: pctx,
+                pctx,
                 pkey_pd: PhantomData,
             })
         }
     }
 
-    /// Returns a shared reference to the `PKeyCtx` associated with the `Verifier`.
-    pub fn pkey_ctx(&self) -> &PKeyCtxRef {
-        unsafe { PKeyCtxRef::from_ptr(self.pkey_ctx) }
+    /// Returns the RSA padding mode in use.
+    ///
+    /// This is only useful for RSA keys.
+    ///
+    /// This corresponds to `EVP_PKEY_CTX_get_rsa_padding`.
+    pub fn rsa_padding(&self) -> Result<Padding, ErrorStack> {
+        unsafe {
+            let mut pad = 0;
+            cvt(ffi::EVP_PKEY_CTX_get_rsa_padding(self.pctx, &mut pad))
+                .map(|_| Padding::from_raw(pad))
+        }
     }
 
-    /// Returns a mutable reference to the `PKeyCtx` associated with the `Verifier`.
-    pub fn pkey_ctx_mut(&mut self) -> &mut PKeyCtxRef {
-        unsafe { PKeyCtxRef::from_ptr_mut(self.pkey_ctx) }
+    /// Sets the RSA padding mode.
+    ///
+    /// This is only useful for RSA keys.
+    ///
+    /// This corresponds to [`EVP_PKEY_CTX_set_rsa_padding`].
+    ///
+    /// [`EVP_PKEY_CTX_set_rsa_padding`]: https://www.openssl.org/docs/manmaster/crypto/EVP_PKEY_CTX_set_rsa_padding.html
+    pub fn set_rsa_padding(&mut self, padding: Padding) -> Result<(), ErrorStack> {
+        unsafe {
+            cvt(ffi::EVP_PKEY_CTX_set_rsa_padding(
+                self.pctx,
+                padding.as_raw(),
+            ))
+            .map(|_| ())
+        }
+    }
+
+    /// Sets the RSA PSS salt length.
+    ///
+    /// This is only useful for RSA keys.
+    ///
+    /// This corresponds to [`EVP_PKEY_CTX_set_rsa_pss_saltlen`].
+    ///
+    /// [`EVP_PKEY_CTX_set_rsa_pss_saltlen`]: https://www.openssl.org/docs/manmaster/crypto/EVP_PKEY_CTX_set_rsa_pss_saltlen.html
+    pub fn set_rsa_pss_saltlen(&mut self, len: RsaPssSaltlen) -> Result<(), ErrorStack> {
+        unsafe {
+            cvt(ffi::EVP_PKEY_CTX_set_rsa_pss_saltlen(
+                self.pctx,
+                len.as_raw(),
+            ))
+            .map(|_| ())
+        }
+    }
+
+    /// Sets the RSA MGF1 algorithm.
+    ///
+    /// This is only useful for RSA keys.
+    ///
+    /// This corresponds to [`EVP_PKEY_CTX_set_rsa_mgf1_md`].
+    ///
+    /// [`EVP_PKEY_CTX_set_rsa_mgf1_md`]: https://www.openssl.org/docs/manmaster/man7/RSA-PSS.html
+    pub fn set_rsa_mgf1_md(&mut self, md: MessageDigest) -> Result<(), ErrorStack> {
+        unsafe {
+            cvt(ffi::EVP_PKEY_CTX_set_rsa_mgf1_md(
+                self.pctx,
+                md.as_ptr() as *mut _,
+            ))
+            .map(|_| ())
+        }
     }
 
     /// Feeds more data into the `Verifier`.
+    ///
+    /// Please note that PureEdDSA (Ed25519 and Ed448 keys) do not support streaming.
+    /// Use [`Verifier::verify_oneshot`] instead.
     ///
     /// OpenSSL documentation at [`EVP_DigestUpdate`].
     ///
@@ -291,7 +566,8 @@ impl<'a> Verifier<'a> {
                 self.md_ctx,
                 buf.as_ptr() as *const _,
                 buf.len(),
-            )).map(|_| ())
+            ))
+            .map(|_| ())
         }
     }
 
@@ -303,7 +579,7 @@ impl<'a> Verifier<'a> {
     pub fn verify(&self, signature: &[u8]) -> Result<bool, ErrorStack> {
         unsafe {
             let r =
-                EVP_DigestVerifyFinal(self.md_ctx, signature.as_ptr() as *const _, signature.len());
+                EVP_DigestVerifyFinal(self.md_ctx, signature.as_ptr() as *mut _, signature.len());
             match r {
                 1 => Ok(true),
                 0 => {
@@ -315,9 +591,30 @@ impl<'a> Verifier<'a> {
         }
     }
 
-    #[deprecated(since = "0.9.23", note = "renamed to `verify`")]
-    pub fn finish(&self, signature: &[u8]) -> Result<bool, ErrorStack> {
-        self.verify(signature)
+    /// Determines if the data given in `buf` matches the provided signature.
+    ///
+    /// OpenSSL documentation at [`EVP_DigestVerify`].
+    ///
+    /// [`EVP_DigestVerify`]: https://www.openssl.org/docs/man1.1.1/man3/EVP_DigestVerify.html
+    #[cfg(any(ossl111, boringssl, libressl370))]
+    pub fn verify_oneshot(&mut self, signature: &[u8], buf: &[u8]) -> Result<bool, ErrorStack> {
+        unsafe {
+            let r = ffi::EVP_DigestVerify(
+                self.md_ctx,
+                signature.as_ptr() as *const _,
+                signature.len(),
+                buf.as_ptr() as *const _,
+                buf.len(),
+            );
+            match r {
+                1 => Ok(true),
+                0 => {
+                    ErrorStack::get();
+                    Ok(false)
+                }
+                _ => Err(ErrorStack::get()),
+            }
+        }
     }
 }
 
@@ -347,23 +644,25 @@ unsafe fn EVP_DigestVerifyFinal(
 
 #[cfg(test)]
 mod test {
-    use hex::{FromHex, ToHex};
+    use hex::{self, FromHex};
+    #[cfg(not(boringssl))]
     use std::iter;
 
-    use hash::MessageDigest;
-    use sign::{Signer, Verifier};
-    use ec::{EcGroup, EcKey};
-    use nid;
-    use rsa::{PKCS1_PADDING, Rsa};
-    use dsa::Dsa;
-    use pkey::PKey;
+    use crate::ec::{EcGroup, EcKey};
+    use crate::hash::MessageDigest;
+    use crate::nid::Nid;
+    use crate::pkey::PKey;
+    use crate::rsa::{Padding, Rsa};
+    #[cfg(ossl111)]
+    use crate::sign::RsaPssSaltlen;
+    use crate::sign::{Signer, Verifier};
 
-    const INPUT: &'static str =
+    const INPUT: &str =
         "65794a68624763694f694a53557a49314e694a392e65794a7063334d694f694a71623255694c41304b49434a6c\
          654841694f6a457a4d4441344d546b7a4f44417344516f67496d6830644841364c79396c654746746347786c4c\
          6d4e76625339706331397962323930496a7030636e566c6651";
 
-    const SIGNATURE: &'static str =
+    const SIGNATURE: &str =
         "702e218943e88fd11eb5d82dbf7845f34106ae1b81fff7731116add1717d83656d420afd3c96eedd73a2663e51\
          66687b000b87226e0187ed1073f945e582adfcef16d85a798ee8c66ddb3db8975b17d09402beedd5d9d9700710\
          8db28160d5f8040ca7445762b81fbe7ff9d92e0ae76f24f25b33bbe6f44ae61eb1040acb20044d3ef9128ed401\
@@ -378,15 +677,12 @@ mod test {
         let pkey = PKey::from_rsa(private_key).unwrap();
 
         let mut signer = Signer::new(MessageDigest::sha256(), &pkey).unwrap();
-        assert_eq!(signer.pkey_ctx_mut().rsa_padding().unwrap(), PKCS1_PADDING);
-        signer
-            .pkey_ctx_mut()
-            .set_rsa_padding(PKCS1_PADDING)
-            .unwrap();
+        assert_eq!(signer.rsa_padding().unwrap(), Padding::PKCS1);
+        signer.set_rsa_padding(Padding::PKCS1).unwrap();
         signer.update(&Vec::from_hex(INPUT).unwrap()).unwrap();
         let result = signer.sign_to_vec().unwrap();
 
-        assert_eq!(result.to_hex(), SIGNATURE);
+        assert_eq!(hex::encode(result), SIGNATURE);
     }
 
     #[test]
@@ -396,10 +692,7 @@ mod test {
         let pkey = PKey::from_rsa(private_key).unwrap();
 
         let mut verifier = Verifier::new(MessageDigest::sha256(), &pkey).unwrap();
-        assert_eq!(
-            verifier.pkey_ctx_mut().rsa_padding().unwrap(),
-            PKCS1_PADDING
-        );
+        assert_eq!(verifier.rsa_padding().unwrap(), Padding::PKCS1);
         verifier.update(&Vec::from_hex(INPUT).unwrap()).unwrap();
         assert!(verifier.verify(&Vec::from_hex(SIGNATURE).unwrap()).unwrap());
     }
@@ -416,58 +709,9 @@ mod test {
         assert!(!verifier.verify(&Vec::from_hex(SIGNATURE).unwrap()).unwrap());
     }
 
-    #[test]
-    pub fn dsa_sign_verify() {
-        let input: Vec<u8> = (0..25).cycle().take(1024).collect();
-
-        let private_key = {
-            let key = include_bytes!("../test/dsa.pem");
-            PKey::from_dsa(Dsa::private_key_from_pem(key).unwrap()).unwrap()
-        };
-
-        let public_key = {
-            let key = include_bytes!("../test/dsa.pem.pub");
-            PKey::from_dsa(Dsa::public_key_from_pem(key).unwrap()).unwrap()
-        };
-
-        let mut signer = Signer::new(MessageDigest::sha1(), &private_key).unwrap();
-        signer.update(&input).unwrap();
-        let sig = signer.sign_to_vec().unwrap();
-
-        let mut verifier = Verifier::new(MessageDigest::sha1(), &public_key).unwrap();
-        verifier.update(&input).unwrap();
-        assert!(verifier.verify(&sig).unwrap());
-    }
-
-    #[test]
-    pub fn dsa_sign_verify_fail() {
-        let input: Vec<u8> = (0..25).cycle().take(1024).collect();
-
-        let private_key = {
-            let key = include_bytes!("../test/dsa.pem");
-            PKey::from_dsa(Dsa::private_key_from_pem(key).unwrap()).unwrap()
-        };
-
-        let public_key = {
-            let key = include_bytes!("../test/dsa.pem.pub");
-            PKey::from_dsa(Dsa::public_key_from_pem(key).unwrap()).unwrap()
-        };
-
-        let mut signer = Signer::new(MessageDigest::sha1(), &private_key).unwrap();
-        signer.update(&input).unwrap();
-        let mut sig = signer.sign_to_vec().unwrap();
-        sig[0] -= 1;
-
-        let mut verifier = Verifier::new(MessageDigest::sha1(), &public_key).unwrap();
-        verifier.update(&input).unwrap();
-        match verifier.verify(&sig) {
-            Ok(true) => panic!("unexpected success"),
-            Ok(false) | Err(_) => {}
-        }
-    }
-
+    #[cfg(not(boringssl))]
     fn test_hmac(ty: MessageDigest, tests: &[(Vec<u8>, Vec<u8>, Vec<u8>)]) {
-        for &(ref key, ref data, ref res) in tests.iter() {
+        for (key, data, res) in tests.iter() {
             let pkey = PKey::hmac(key).unwrap();
             let mut signer = Signer::new(ty, &pkey).unwrap();
             signer.update(data).unwrap();
@@ -476,6 +720,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(not(boringssl))]
     fn hmac_md5() {
         // test vectors from RFC 2202
         let tests: [(Vec<u8>, Vec<u8>, Vec<u8>); 7] = [
@@ -522,6 +767,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(not(boringssl))]
     fn hmac_sha1() {
         // test vectors from RFC 2202
         let tests: [(Vec<u8>, Vec<u8>, Vec<u8>); 7] = [
@@ -568,8 +814,25 @@ mod test {
     }
 
     #[test]
+    #[cfg(ossl110)]
+    fn test_cmac() {
+        let cipher = crate::symm::Cipher::aes_128_cbc();
+        let key = Vec::from_hex("9294727a3638bb1c13f48ef8158bfc9d").unwrap();
+        let pkey = PKey::cmac(&cipher, &key).unwrap();
+        let mut signer = Signer::new_without_digest(&pkey).unwrap();
+
+        let data = b"Hi There";
+        signer.update(data as &[u8]).unwrap();
+
+        let expected = vec![
+            136, 101, 61, 167, 61, 30, 248, 234, 124, 166, 196, 157, 203, 52, 171, 19,
+        ];
+        assert_eq!(signer.sign_to_vec().unwrap(), expected);
+    }
+
+    #[test]
     fn ec() {
-        let group = EcGroup::from_curve_name(nid::X9_62_PRIME256V1).unwrap();
+        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
         let key = EcKey::generate(&group).unwrap();
         let key = PKey::from_ec_key(key).unwrap();
 
@@ -579,6 +842,45 @@ mod test {
 
         let mut verifier = Verifier::new(MessageDigest::sha256(), &key).unwrap();
         verifier.update(b"hello world").unwrap();
+        assert!(verifier.verify(&signature).unwrap());
+    }
+
+    #[test]
+    #[cfg(any(ossl111, boringssl, libressl370))]
+    fn eddsa() {
+        let key = PKey::generate_ed25519().unwrap();
+
+        let mut signer = Signer::new_without_digest(&key).unwrap();
+        let signature = signer.sign_oneshot_to_vec(b"hello world").unwrap();
+
+        let mut verifier = Verifier::new_without_digest(&key).unwrap();
+        assert!(verifier.verify_oneshot(&signature, b"hello world").unwrap());
+    }
+
+    #[test]
+    #[cfg(ossl111)]
+    fn rsa_sign_verify() {
+        let key = include_bytes!("../test/rsa.pem");
+        let private_key = Rsa::private_key_from_pem(key).unwrap();
+        let pkey = PKey::from_rsa(private_key).unwrap();
+
+        let mut signer = Signer::new(MessageDigest::sha256(), &pkey).unwrap();
+        signer.set_rsa_padding(Padding::PKCS1_PSS).unwrap();
+        assert_eq!(signer.rsa_padding().unwrap(), Padding::PKCS1_PSS);
+        signer
+            .set_rsa_pss_saltlen(RsaPssSaltlen::DIGEST_LENGTH)
+            .unwrap();
+        signer.set_rsa_mgf1_md(MessageDigest::sha256()).unwrap();
+        signer.update(&Vec::from_hex(INPUT).unwrap()).unwrap();
+        let signature = signer.sign_to_vec().unwrap();
+
+        let mut verifier = Verifier::new(MessageDigest::sha256(), &pkey).unwrap();
+        verifier.set_rsa_padding(Padding::PKCS1_PSS).unwrap();
+        verifier
+            .set_rsa_pss_saltlen(RsaPssSaltlen::DIGEST_LENGTH)
+            .unwrap();
+        verifier.set_rsa_mgf1_md(MessageDigest::sha256()).unwrap();
+        verifier.update(&Vec::from_hex(INPUT).unwrap()).unwrap();
         assert!(verifier.verify(&signature).unwrap());
     }
 }

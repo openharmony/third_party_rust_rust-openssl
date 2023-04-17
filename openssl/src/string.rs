@@ -1,12 +1,12 @@
-use ffi;
-use foreign_types::{ForeignType, ForeignTypeRef};
+use foreign_types::ForeignTypeRef;
 use libc::{c_char, c_void};
-use std::fmt;
+use std::convert::AsRef;
 use std::ffi::CStr;
+use std::fmt;
 use std::ops::Deref;
 use std::str;
 
-use stack::Stackable;
+use crate::stack::Stackable;
 
 foreign_type_and_impl_send_sync! {
     type CType = c_char;
@@ -16,32 +16,32 @@ foreign_type_and_impl_send_sync! {
     pub struct OpensslStringRef;
 }
 
-impl OpensslString {
-    #[deprecated(note = "use from_ptr", since = "0.9.7")]
-    pub unsafe fn from_raw_parts(buf: *mut u8, _: usize) -> OpensslString {
-        OpensslString::from_ptr(buf as *mut c_char)
-    }
-
-    #[deprecated(note = "use from_ptr", since = "0.9.7")]
-    pub unsafe fn from_null_terminated(buf: *mut c_char) -> OpensslString {
-        OpensslString::from_ptr(buf)
-    }
-}
-
 impl fmt::Display for OpensslString {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&**self, f)
     }
 }
 
 impl fmt::Debug for OpensslString {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&**self, f)
     }
 }
 
 impl Stackable for OpensslString {
     type StackType = ffi::stack_st_OPENSSL_STRING;
+}
+
+impl AsRef<str> for OpensslString {
+    fn as_ref(&self) -> &str {
+        self
+    }
+}
+
+impl AsRef<[u8]> for OpensslString {
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
 }
 
 impl Deref for OpensslStringRef {
@@ -55,26 +55,40 @@ impl Deref for OpensslStringRef {
     }
 }
 
+impl AsRef<str> for OpensslStringRef {
+    fn as_ref(&self) -> &str {
+        self
+    }
+}
+
+impl AsRef<[u8]> for OpensslStringRef {
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
 impl fmt::Display for OpensslStringRef {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&**self, f)
     }
 }
 
 impl fmt::Debug for OpensslStringRef {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&**self, f)
     }
 }
 
-#[cfg(not(ossl110))]
+#[inline]
+#[cfg(not(boringssl))]
 unsafe fn free(buf: *mut c_char) {
-    ::ffi::CRYPTO_free(buf as *mut c_void);
+    ffi::OPENSSL_free(buf as *mut c_void);
 }
 
-#[cfg(ossl110)]
+#[inline]
+#[cfg(boringssl)]
 unsafe fn free(buf: *mut c_char) {
-    ::ffi::CRYPTO_free(
+    ffi::CRYPTO_free(
         buf as *mut c_void,
         concat!(file!(), "\0").as_ptr() as *const c_char,
         line!() as ::libc::c_int,
