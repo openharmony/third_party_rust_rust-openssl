@@ -1,23 +1,32 @@
-use foreign_types::{ForeignTypeRef, ForeignType, Opaque};
+use cfg_if::cfg_if;
+use foreign_types::{ForeignType, ForeignTypeRef, Opaque};
 use libc::c_int;
 use std::borrow::Borrow;
 use std::convert::AsRef;
+use std::fmt;
 use std::iter;
 use std::marker::PhantomData;
 use std::mem;
-use ffi;
+use std::ops::{Deref, DerefMut, Index, IndexMut, Range};
 
-use {cvt, cvt_p};
-use error::ErrorStack;
-use std::ops::{Deref, DerefMut, Index, IndexMut};
+use crate::error::ErrorStack;
+use crate::util::ForeignTypeExt;
+use crate::{cvt, cvt_p, LenType};
 
-#[cfg(ossl10x)]
-use ffi::{sk_pop as OPENSSL_sk_pop, sk_free as OPENSSL_sk_free, sk_num as OPENSSL_sk_num,
-          sk_value as OPENSSL_sk_value, _STACK as OPENSSL_STACK,
-          sk_new_null as OPENSSL_sk_new_null, sk_push as OPENSSL_sk_push};
-#[cfg(ossl110)]
-use ffi::{OPENSSL_sk_pop, OPENSSL_sk_free, OPENSSL_sk_num, OPENSSL_sk_value, OPENSSL_STACK,
-          OPENSSL_sk_new_null, OPENSSL_sk_push};
+cfg_if! {
+    if #[cfg(ossl110)] {
+        use ffi::{
+            OPENSSL_sk_pop, OPENSSL_sk_free, OPENSSL_sk_num, OPENSSL_sk_value, OPENSSL_STACK,
+            OPENSSL_sk_new_null, OPENSSL_sk_push,
+        };
+    } else {
+        use ffi::{
+            sk_pop as OPENSSL_sk_pop, sk_free as OPENSSL_sk_free, sk_num as OPENSSL_sk_num,
+            sk_value as OPENSSL_sk_value, _STACK as OPENSSL_STACK,
+            sk_new_null as OPENSSL_sk_new_null, sk_push as OPENSSL_sk_push,
+        };
+    }
+}
 
 /// Trait implemented by types which can be placed in a stack.
 ///
@@ -33,21 +42,33 @@ pub trait Stackable: ForeignType {
 /// An owned stack of `T`.
 pub struct Stack<T: Stackable>(*mut T::StackType);
 
+unsafe impl<T: Stackable + Send> Send for Stack<T> {}
+unsafe impl<T: Stackable + Sync> Sync for Stack<T> {}
+
+impl<T> fmt::Debug for Stack<T>
+where
+    T: Stackable,
+    T::Ref: fmt::Debug,
+{
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_list().entries(self).finish()
+    }
+}
+impl<T: Stackable> Drop for Stack<T> {
+    fn drop(&mut self) {
+        unsafe {
+            while self.pop().is_some() {}
+            OPENSSL_sk_free(self.0 as *mut _);
+        }
+    }
+}
+
 impl<T: Stackable> Stack<T> {
     pub fn new() -> Result<Stack<T>, ErrorStack> {
         unsafe {
             ffi::init();
             let ptr = cvt_p(OPENSSL_sk_new_null())?;
             Ok(Stack(ptr as *mut _))
-        }
-    }
-}
-
-impl<T: Stackable> Drop for Stack<T> {
-    fn drop(&mut self) {
-        unsafe {
-            while let Some(_) = self.pop() {}
-            OPENSSL_sk_free(self.0 as *mut _);
         }
     }
 }
@@ -59,7 +80,7 @@ impl<T: Stackable> iter::IntoIterator for Stack<T> {
     fn into_iter(self) -> IntoIter<T> {
         let it = IntoIter {
             stack: self.0,
-            idx: 0,
+            idxs: 0..self.len() as LenType,
         };
         mem::forget(self);
         it
@@ -68,13 +89,13 @@ impl<T: Stackable> iter::IntoIterator for Stack<T> {
 
 impl<T: Stackable> AsRef<StackRef<T>> for Stack<T> {
     fn as_ref(&self) -> &StackRef<T> {
-        &*self
+        self
     }
 }
 
 impl<T: Stackable> Borrow<StackRef<T>> for Stack<T> {
     fn borrow(&self) -> &StackRef<T> {
-        &*self
+        self
     }
 }
 
@@ -87,7 +108,7 @@ impl<T: Stackable> ForeignType for Stack<T> {
         assert!(
             !ptr.is_null(),
             "Must not instantiate a Stack from a null-ptr - use Stack::new() in \
-                                 that case"
+             that case"
         );
         Stack(ptr)
     }
@@ -114,18 +135,14 @@ impl<T: Stackable> DerefMut for Stack<T> {
 
 pub struct IntoIter<T: Stackable> {
     stack: *mut T::StackType,
-    idx: c_int,
-}
-
-impl<T: Stackable> IntoIter<T> {
-    fn stack_len(&self) -> c_int {
-        unsafe { OPENSSL_sk_num(self.stack as *mut _) }
-    }
+    idxs: Range<LenType>,
 }
 
 impl<T: Stackable> Drop for IntoIter<T> {
     fn drop(&mut self) {
         unsafe {
+            // https://github.com/rust-lang/rust-clippy/issues/7510
+            #[allow(clippy::while_let_on_iterator)]
             while let Some(_) = self.next() {}
             OPENSSL_sk_free(self.stack as *mut _);
         }
@@ -137,25 +154,33 @@ impl<T: Stackable> Iterator for IntoIter<T> {
 
     fn next(&mut self) -> Option<T> {
         unsafe {
-            if self.idx == self.stack_len() {
-                None
-            } else {
-                let ptr = OPENSSL_sk_value(self.stack as *mut _, self.idx);
-                self.idx += 1;
-                Some(T::from_ptr(ptr as *mut _))
-            }
+            self.idxs
+                .next()
+                .map(|i| T::from_ptr(OPENSSL_sk_value(self.stack as *mut _, i) as *mut _))
         }
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let size = (self.stack_len() - self.idx) as usize;
-        (size, Some(size))
+        self.idxs.size_hint()
+    }
+}
+
+impl<T: Stackable> DoubleEndedIterator for IntoIter<T> {
+    fn next_back(&mut self) -> Option<T> {
+        unsafe {
+            self.idxs
+                .next_back()
+                .map(|i| T::from_ptr(OPENSSL_sk_value(self.stack as *mut _, i) as *mut _))
+        }
     }
 }
 
 impl<T: Stackable> ExactSizeIterator for IntoIter<T> {}
 
 pub struct StackRef<T: Stackable>(Opaque, PhantomData<T>);
+
+unsafe impl<T: Stackable + Send> Send for StackRef<T> {}
+unsafe impl<T: Stackable + Sync> Sync for StackRef<T> {}
 
 impl<T: Stackable> ForeignTypeRef for StackRef<T> {
     type CType = T::StackType;
@@ -166,28 +191,27 @@ impl<T: Stackable> StackRef<T> {
         self.as_ptr() as *mut _
     }
 
-    /// Returns the number of items in the stack
+    /// Returns the number of items in the stack.
     pub fn len(&self) -> usize {
         unsafe { OPENSSL_sk_num(self.as_stack()) as usize }
     }
 
-    pub fn iter(&self) -> Iter<T> {
-        // Unfortunately we can't simply convert the stack into a
-        // slice and use that because OpenSSL 1.1.0 doesn't directly
-        // expose the stack data (we have to use `OPENSSL_sk_value`
-        // instead). We have to rewrite the entire iteration framework
-        // instead.
+    /// Determines if the stack is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 
+    pub fn iter(&self) -> Iter<'_, T> {
         Iter {
             stack: self,
-            pos: 0,
+            idxs: 0..self.len() as LenType,
         }
     }
 
-    pub fn iter_mut(&mut self) -> IterMut<T> {
+    pub fn iter_mut(&mut self) -> IterMut<'_, T> {
         IterMut {
+            idxs: 0..self.len() as LenType,
             stack: self,
-            pos: 0,
         }
     }
 
@@ -218,9 +242,7 @@ impl<T: Stackable> StackRef<T> {
     /// Pushes a value onto the top of the stack.
     pub fn push(&mut self, data: T) -> Result<(), ErrorStack> {
         unsafe {
-            cvt(
-                OPENSSL_sk_push(self.as_stack(), data.as_ptr() as *mut _),
-            )?;
+            cvt(OPENSSL_sk_push(self.as_stack(), data.as_ptr() as *mut _) as c_int)?;
             mem::forget(data);
             Ok(())
         }
@@ -230,16 +252,12 @@ impl<T: Stackable> StackRef<T> {
     pub fn pop(&mut self) -> Option<T> {
         unsafe {
             let ptr = OPENSSL_sk_pop(self.as_stack());
-            if ptr.is_null() {
-                None
-            } else {
-                Some(T::from_ptr(ptr as *mut _))
-            }
+            T::from_ptr_opt(ptr as *mut _)
         }
     }
 
     unsafe fn _get(&self, idx: usize) -> *mut T::CType {
-        OPENSSL_sk_value(self.as_stack(), idx as c_int) as *mut _
+        OPENSSL_sk_value(self.as_stack(), idx as LenType) as *mut _
     }
 }
 
@@ -294,67 +312,69 @@ impl<'a, T: Stackable> iter::IntoIterator for &'a mut Stack<T> {
 }
 
 /// An iterator over the stack's contents.
-pub struct Iter<'a, T: Stackable>
-where
-    T: 'a,
-{
+pub struct Iter<'a, T: Stackable> {
     stack: &'a StackRef<T>,
-    pos: usize,
+    idxs: Range<LenType>,
 }
 
-impl<'a, T: Stackable> iter::Iterator for Iter<'a, T> {
+impl<'a, T: Stackable> Iterator for Iter<'a, T> {
     type Item = &'a T::Ref;
 
     fn next(&mut self) -> Option<&'a T::Ref> {
-        let n = self.stack.get(self.pos);
-
-        if n.is_some() {
-            self.pos += 1;
+        unsafe {
+            self.idxs
+                .next()
+                .map(|i| T::Ref::from_ptr(OPENSSL_sk_value(self.stack.as_stack(), i) as *mut _))
         }
-
-        n
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let rem = self.stack.len() - self.pos;
-
-        (rem, Some(rem))
+        self.idxs.size_hint()
     }
 }
 
-impl<'a, T: Stackable> iter::ExactSizeIterator for Iter<'a, T> {}
-
-/// A mutable iterator over the stack's contents.
-pub struct IterMut<'a, T: Stackable + 'a> {
-    stack: &'a mut StackRef<T>,
-    pos: usize,
+impl<'a, T: Stackable> DoubleEndedIterator for Iter<'a, T> {
+    fn next_back(&mut self) -> Option<&'a T::Ref> {
+        unsafe {
+            self.idxs
+                .next_back()
+                .map(|i| T::Ref::from_ptr(OPENSSL_sk_value(self.stack.as_stack(), i) as *mut _))
+        }
+    }
 }
 
-impl<'a, T: Stackable> iter::Iterator for IterMut<'a, T> {
+impl<'a, T: Stackable> ExactSizeIterator for Iter<'a, T> {}
+
+/// A mutable iterator over the stack's contents.
+pub struct IterMut<'a, T: Stackable> {
+    stack: &'a mut StackRef<T>,
+    idxs: Range<LenType>,
+}
+
+impl<'a, T: Stackable> Iterator for IterMut<'a, T> {
     type Item = &'a mut T::Ref;
 
     fn next(&mut self) -> Option<&'a mut T::Ref> {
-        if self.pos >= self.stack.len() {
-            None
-        } else {
-            // Rust won't allow us to get a mutable reference into
-            // `stack` in this situation since it can't statically
-            // guarantee that we won't return several references to
-            // the same object, so we have to use unsafe code for
-            // mutable iterators.
-            let n = unsafe { Some(T::Ref::from_ptr_mut(self.stack._get(self.pos))) };
-
-            self.pos += 1;
-
-            n
+        unsafe {
+            self.idxs
+                .next()
+                .map(|i| T::Ref::from_ptr_mut(OPENSSL_sk_value(self.stack.as_stack(), i) as *mut _))
         }
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let rem = self.stack.len() - self.pos;
-
-        (rem, Some(rem))
+        self.idxs.size_hint()
     }
 }
 
-impl<'a, T: Stackable> iter::ExactSizeIterator for IterMut<'a, T> {}
+impl<'a, T: Stackable> DoubleEndedIterator for IterMut<'a, T> {
+    fn next_back(&mut self) -> Option<&'a mut T::Ref> {
+        unsafe {
+            self.idxs
+                .next_back()
+                .map(|i| T::Ref::from_ptr_mut(OPENSSL_sk_value(self.stack.as_stack(), i) as *mut _))
+        }
+    }
+}
+
+impl<'a, T: Stackable> ExactSizeIterator for IterMut<'a, T> {}
