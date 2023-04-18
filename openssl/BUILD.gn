@@ -1,0 +1,53 @@
+# Copyright (c) 2023 Huawei Device Co., Ltd.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import("//build/ohos.gni")
+
+ohos_cargo_crate("lib") {
+  crate_name = "openssl"
+  crate_type = "rlib"
+  crate_root = "src/lib.rs"
+
+  sources = [ "src/lib.rs" ]
+  edition = "2018"
+  cargo_pkg_version = "0.10.47"
+  cargo_pkg_authors = "Steven Fackler <sfackler@gmail.com>"
+  cargo_pkg_name = "openssl"
+  cargo_pkg_description = "OpenSSL bindings"
+  deps = [
+    "//third_party/rust/crates/bitflags:lib",
+    "//third_party/rust/crates/cfg-if:lib",
+    "//third_party/rust/crates/foreign-types/foreign-types/:lib",
+    "//third_party/rust/crates/libc:lib",
+    "//third_party/rust/crates/once_cell:lib",
+    "//third_party/rust/crates/rust-openssl/openssl-macros:lib(${host_toolchain})",
+    "//third_party/rust/crates/rust-openssl/openssl-sys:lib",
+  ]
+  features = [ "default" ]
+  rustflags = [
+    "--cfg=osslconf=\"OPENSSL_NO_BF\"",
+    "--cfg=osslconf=\"OPENSSL_NO_IDEA\"",
+    "--cfg=osslconf=\"OPENSSL_NO_CAMELLIA\"",
+    "--cfg=osslconf=\"OPENSSL_NO_CAST\"",
+    "--cfg=osslconf=\"OPENSSL_NO_RMD160\"",
+    "--cfg=osslconf=\"OPENSSL_NO_SSL3_METHOD\"",
+    "--cfg=ossl101",
+    "--cfg=ossl102",
+    "--cfg=ossl110",
+    "--cfg=ossl110g",
+    "--cfg=ossl110h",
+    "--cfg=ossl111",
+    "-Copt-level=3",
+    "-Cprefer-dynamic",
+  ]
+}
