@@ -126,6 +126,7 @@ pub use ffi::init;
 
 use libc::c_int;
 
+extern crate openssl_sys as ffi;
 use crate::error::ErrorStack;
 
 #[macro_use]
