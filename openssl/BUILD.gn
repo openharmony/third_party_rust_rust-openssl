@@ -47,7 +47,6 @@ ohos_cargo_crate("lib") {
     "--cfg=ossl110g",
     "--cfg=ossl110h",
     "--cfg=ossl111",
-    "-Copt-level=3",
-    "-Cprefer-dynamic",
+    "--cfg=ossl300",
   ]
 }
