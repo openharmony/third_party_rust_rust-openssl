@@ -38,6 +38,7 @@ ohos_cargo_crate("lib") {
     "--cfg=osslconf=\"OPENSSL_NO_CAST\"",
     "--cfg=osslconf=\"OPENSSL_NO_RMD160\"",
     "--cfg=osslconf=\"OPENSSL_NO_SSL3_METHOD\"",
+    "--cfg=ossl300",
     "--cfg=ossl101",
     "--cfg=ossl102",
     "--cfg=ossl102f",
