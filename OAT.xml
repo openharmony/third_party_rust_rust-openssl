@@ -63,5 +63,14 @@ Note:If the text contains special characters|please escape them according to the
                 <policyitem type="compatibility" name="OpenSSL" path="THIRD_PARTY" desc="rust-openssl contains code from OpenSSL, under the following license:OpenSSL License"/>
             </policy>
         </policylist>
+        <filefilterlist>
+            <filefilter name="binaryFileTypePolicyFilter" desc="Filters for binary file policies">
+                <filteritem type="filename" name="*.pem" desc="key or certificate for test."/>
+                <filteritem type="filename" name="*.der" desc="key or certificate for test."/>
+                <filteritem type="filename" name="*.pub" desc="public key for test."/>
+                <filteritem type="filename" name="*.p12" desc="certificate for test."/>
+                <filteritem type="filename" name="*.crl" desc="certificate revocation list for test."/>
+            </filefilter>
+        </filefilterlist>
     </oatconfig>
 </configuration>
