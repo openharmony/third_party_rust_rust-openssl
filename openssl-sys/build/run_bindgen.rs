@@ -12,6 +12,7 @@ const INCLUDES: &str = "
 #include <openssl/aes.h>
 #include <openssl/asn1.h>
 #include <openssl/bio.h>
+#include <openssl/cmac.h>
 #include <openssl/conf.h>
 #include <openssl/crypto.h>
 #include <openssl/dh.h>
@@ -53,6 +54,10 @@ const INCLUDES: &str = "
 
 #if OPENSSL_VERSION_NUMBER >= 0x30000000
 #include <openssl/provider.h>
+#endif
+
+#if defined(LIBRESSL_VERSION_NUMBER) || defined(OPENSSL_IS_BORINGSSL)
+#include <openssl/poly1305.h>
 #endif
 ";
 
@@ -109,12 +114,15 @@ pub fn run_boringssl(include_dirs: &[PathBuf]) {
     let mut builder = bindgen::builder()
         .rust_target(RustTarget::Stable_1_47)
         .ctypes_prefix("::libc")
+        .raw_line("use libc::*;")
         .derive_default(false)
         .enable_function_attribute_detection()
-        .size_t_is_usize(true)
         .default_macro_constant_type(MacroTypeVariation::Signed)
         .rustified_enum("point_conversion_form_t")
         .allowlist_file(".*/openssl/[^/]+\\.h")
+        .allowlist_recursively(false)
+        .blocklist_function("BIO_vsnprintf")
+        .blocklist_function("OPENSSL_vasprintf")
         .wrap_static_fns(true)
         .wrap_static_fns_path(out_dir.join("boring_static_wrapper").display().to_string())
         .layout_tests(false)
@@ -163,14 +171,19 @@ pub fn run_boringssl(include_dirs: &[PathBuf]) {
     bindgen_cmd
         .arg("-o")
         .arg(out_dir.join("bindgen.rs"))
+        // Must be a valid version from
+        // https://docs.rs/bindgen/latest/bindgen/enum.RustTarget.html
         .arg("--rust-target=1.47")
         .arg("--ctypes-prefix=::libc")
+        .arg("--raw-line=use libc::*;")
         .arg("--no-derive-default")
         .arg("--enable-function-attribute-detection")
-        .arg("--size_t-is-usize")
         .arg("--default-macro-constant-type=signed")
         .arg("--rustified-enum=point_conversion_form_t")
         .arg("--allowlist-file=.*/openssl/[^/]+\\.h")
+        .arg("--no-recursive-allowlist")
+        .arg("--blocklist-function=BIO_vsnprintf")
+        .arg("--blocklist-function=OPENSSL_vasprintf")
         .arg("--experimental")
         .arg("--wrap-static-fns")
         .arg("--wrap-static-fns-path")
