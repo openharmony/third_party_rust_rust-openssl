@@ -20,7 +20,7 @@ ohos_cargo_crate("lib") {
 
   sources = [ "src/lib.rs" ]
   edition = "2018"
-  cargo_pkg_version = "0.1.0"
+  cargo_pkg_version = "0.1.1"
   cargo_pkg_name = "openssl-macros"
   cargo_pkg_description = "Internal macros used by the openssl crate."
   deps = [
