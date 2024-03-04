@@ -1,6 +1,6 @@
 [
   {
-    "Name": "openssl",
+    "Name": "rust-openssl",
     "License": "Apache License V2.0",
     "License File": "THIRD_PARTY",
     "Version Number": "0.10.48",
