@@ -20,7 +20,7 @@ ohos_cargo_crate("lib") {
 
   sources = [ "src/lib.rs" ]
   edition = "2018"
-  cargo_pkg_version = "0.9.82"
+  cargo_pkg_version = "0.9.91"
   cargo_pkg_authors = "Alex Crichton <alex@alexcrichton.com>,  Steven Fackler <sfackler@gmail.com>"
   cargo_pkg_name = "openssl-sys"
   cargo_pkg_description = "FFI bindings to OpenSSL"

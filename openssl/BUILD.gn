@@ -20,7 +20,7 @@ ohos_cargo_crate("lib") {
 
   sources = [ "src/lib.rs" ]
   edition = "2018"
-  cargo_pkg_version = "0.10.47"
+  cargo_pkg_version = "0.10.56"
   cargo_pkg_authors = "Steven Fackler <sfackler@gmail.com>"
   cargo_pkg_name = "openssl"
   cargo_pkg_description = "OpenSSL bindings"
