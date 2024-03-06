@@ -51,13 +51,13 @@ pub struct Nid(c_int);
 #[allow(non_snake_case)]
 impl Nid {
     /// Create a `Nid` from an integer representation.
-    pub fn from_raw(raw: c_int) -> Nid {
+    pub const fn from_raw(raw: c_int) -> Nid {
         Nid(raw)
     }
 
     /// Return the integer representation of a `Nid`.
     #[allow(clippy::trivially_copy_pass_by_ref)]
-    pub fn as_raw(&self) -> c_int {
+    pub const fn as_raw(&self) -> c_int {
         self.0
     }
 
@@ -1074,6 +1074,8 @@ impl Nid {
     pub const AES_128_CBC_HMAC_SHA1: Nid = Nid(ffi::NID_aes_128_cbc_hmac_sha1);
     pub const AES_192_CBC_HMAC_SHA1: Nid = Nid(ffi::NID_aes_192_cbc_hmac_sha1);
     pub const AES_256_CBC_HMAC_SHA1: Nid = Nid(ffi::NID_aes_256_cbc_hmac_sha1);
+    #[cfg(ossl111)]
+    pub const SM2: Nid = Nid(ffi::NID_sm2);
     #[cfg(any(ossl111, libressl291))]
     pub const SM3: Nid = Nid(ffi::NID_sm3);
     #[cfg(ossl111)]
@@ -1165,10 +1167,13 @@ mod test {
         assert_eq!(nid.short_name().unwrap(), "foo");
         assert_eq!(nid.long_name().unwrap(), "foobar");
 
-        let invalid_oid = Nid::create("invalid_oid", "invalid", "invalid");
-        assert!(
-            invalid_oid.is_err(),
-            "invalid_oid should not return a valid value"
-        );
+        // Due to a bug in OpenSSL 3.1.0, this test crashes on Windows
+        if !cfg!(ossl310) {
+            let invalid_oid = Nid::create("invalid_oid", "invalid", "invalid");
+            assert!(
+                invalid_oid.is_err(),
+                "invalid_oid should not return a valid value"
+            );
+        }
     }
 }
