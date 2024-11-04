@@ -73,6 +73,7 @@ use crate::ssl::bio::BioMethod;
 use crate::ssl::callbacks::*;
 use crate::ssl::error::InnerError;
 use crate::stack::{Stack, StackRef, Stackable};
+use crate::util;
 use crate::util::{ForeignTypeExt, ForeignTypeRefExt};
 use crate::x509::store::{X509Store, X509StoreBuilderRef, X509StoreRef};
 #[cfg(any(ossl102, libressl261))]
@@ -98,7 +99,6 @@ use std::ops::{Deref, DerefMut};
 use std::panic::resume_unwind;
 use std::path::Path;
 use std::ptr;
-use std::slice;
 use std::str;
 use std::sync::{Arc, Mutex};
 
@@ -695,7 +695,7 @@ pub fn select_next_proto<'a>(server: &[u8], client: &'a [u8]) -> Option<&'a [u8]
             client.len() as c_uint,
         );
         if r == ffi::OPENSSL_NPN_NEGOTIATED {
-            Some(slice::from_raw_parts(out as *const u8, outlen as usize))
+            Some(util::from_raw_parts(out as *const u8, outlen as usize))
         } else {
             None
         }
@@ -2122,7 +2122,7 @@ impl SslSessionRef {
         unsafe {
             let mut len = 0;
             let p = ffi::SSL_SESSION_get_id(self.as_ptr(), &mut len);
-            slice::from_raw_parts(p as *const u8, len as usize)
+            util::from_raw_parts(p as *const u8, len as usize)
         }
     }
 
@@ -2612,7 +2612,7 @@ impl SslRef {
             if data.is_null() {
                 None
             } else {
-                Some(slice::from_raw_parts(data, len as usize))
+                Some(util::from_raw_parts(data, len as usize))
             }
         }
     }
@@ -2890,7 +2890,7 @@ impl SslRef {
             if len < 0 {
                 None
             } else {
-                Some(slice::from_raw_parts(p as *const u8, len as usize))
+                Some(util::from_raw_parts(p as *const u8, len as usize))
             }
         }
     }
@@ -3057,7 +3057,7 @@ impl SslRef {
             if len == 0 {
                 None
             } else {
-                Some(slice::from_raw_parts(ptr, len))
+                Some(util::from_raw_parts(ptr, len))
             }
         }
     }
@@ -3076,7 +3076,7 @@ impl SslRef {
             if len == 0 {
                 None
             } else {
-                Some(slice::from_raw_parts(ptr, len))
+                Some(util::from_raw_parts(ptr, len))
             }
         }
     }
@@ -3095,7 +3095,7 @@ impl SslRef {
             if len == 0 {
                 None
             } else {
-                Some(slice::from_raw_parts(ptr, len))
+                Some(util::from_raw_parts(ptr, len))
             }
         }
     }
@@ -3149,7 +3149,7 @@ impl SslRef {
             if len == 0 {
                 None
             } else {
-                Some(slice::from_raw_parts(ptr, len))
+                Some(util::from_raw_parts(ptr, len))
             }
         }
     }
