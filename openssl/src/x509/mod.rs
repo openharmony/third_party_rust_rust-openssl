@@ -20,7 +20,6 @@ use std::mem;
 use std::net::IpAddr;
 use std::path::Path;
 use std::ptr;
-use std::slice;
 use std::str;
 
 use crate::asn1::{
@@ -37,7 +36,7 @@ use crate::pkey::{HasPrivate, HasPublic, PKey, PKeyRef, Public};
 use crate::ssl::SslRef;
 use crate::stack::{Stack, StackRef, Stackable};
 use crate::string::OpensslString;
-use crate::util::{ForeignTypeExt, ForeignTypeRefExt};
+use crate::util::{self, ForeignTypeExt, ForeignTypeRefExt};
 use crate::{cvt, cvt_n, cvt_p};
 use openssl_macros::corresponds;
 
@@ -2102,7 +2101,7 @@ impl GeneralNameRef {
             let ptr = ASN1_STRING_get0_data(d as *mut _);
             let len = ffi::ASN1_STRING_length(d as *mut _);
 
-            let slice = slice::from_raw_parts(ptr as *const u8, len as usize);
+            let slice = util::from_raw_parts(ptr as *const u8, len as usize);
             // IA5Strings are stated to be ASCII (specifically IA5). Hopefully
             // OpenSSL checks that when loading a certificate but if not we'll
             // use this instead of from_utf8_unchecked just in case.
@@ -2155,7 +2154,7 @@ impl GeneralNameRef {
             let ptr = ASN1_STRING_get0_data(d as *mut _);
             let len = ffi::ASN1_STRING_length(d as *mut _);
 
-            Some(slice::from_raw_parts(ptr as *const u8, len as usize))
+            Some(util::from_raw_parts(ptr as *const u8, len as usize))
         }
     }
 }
