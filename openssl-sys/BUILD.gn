@@ -24,10 +24,10 @@ ohos_cargo_crate("lib") {
   cargo_pkg_authors = "Alex Crichton <alex@alexcrichton.com>,  Steven Fackler <sfackler@gmail.com>"
   cargo_pkg_name = "openssl-sys"
   cargo_pkg_description = "FFI bindings to OpenSSL"
-  deps = [
-    "//third_party/openssl:libcrypto_shared",
-    "//third_party/openssl:libssl_shared",
-    "//third_party/rust/crates/libc:lib",
+  deps = [ "//third_party/rust/crates/libc:lib" ]
+  external_deps = [
+    "openssl:libcrypto_shared",
+    "openssl:libssl_shared",
   ]
   rustflags = [
     "--cfg=const_fn",
@@ -51,4 +51,6 @@ ohos_cargo_crate("lib") {
     "--cfg=ossl111b",
     "--cfg=ossl111c",
   ]
+  subsystem_name = "thirdparty"
+  part_name = "rust_rust-openssl"
 }

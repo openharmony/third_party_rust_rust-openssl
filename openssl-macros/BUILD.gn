@@ -28,4 +28,6 @@ ohos_cargo_crate("lib") {
     "//third_party/rust/crates/quote:lib",
     "//third_party/rust/crates/syn:lib",
   ]
+  subsystem_name = "thirdparty"
+  part_name = "rust_rust-openssl"
 }
