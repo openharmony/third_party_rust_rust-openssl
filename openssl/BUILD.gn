@@ -49,4 +49,6 @@ ohos_cargo_crate("lib") {
     "--cfg=ossl111",
     "--cfg=ossl300",
   ]
+  subsystem_name = "thirdparty"
+  part_name = "rust_rust-openssl"
 }
