@@ -13,7 +13,7 @@
 
 import("//build/ohos.gni")
 
-ohos_cargo_crate("lib") {
+ohos_cargo_crate("lib_macros") {
   crate_name = "openssl_macros"
   crate_type = "proc-macro"
   crate_root = "src/lib.rs"
@@ -28,6 +28,4 @@ ohos_cargo_crate("lib") {
     "//third_party/rust/crates/quote:lib",
     "//third_party/rust/crates/syn:lib",
   ]
-  subsystem_name = "thirdparty"
-  part_name = "rust_rust-openssl"
 }

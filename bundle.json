@@ -35,6 +35,7 @@
       "inner_kits": [
         {
           "name" : "//third_party/rust/crates/rust-openssl/openssl:lib",
+          "type" : "rlib",
           "header": {
             "header_base": [],
             "header_files": []

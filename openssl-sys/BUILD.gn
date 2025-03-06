@@ -13,7 +13,7 @@
 
 import("//build/ohos.gni")
 
-ohos_cargo_crate("lib") {
+ohos_cargo_crate("lib_sys") {
   crate_name = "openssl_sys"
   crate_type = "rlib"
   crate_root = "src/lib.rs"
@@ -29,6 +29,8 @@ ohos_cargo_crate("lib") {
     "openssl:libcrypto_shared",
     "openssl:libssl_shared",
   ]
+  module_output_extension = ".rlib"
+  install_enable = false
   rustflags = [
     "--cfg=const_fn",
     "--cfg=openssl",
