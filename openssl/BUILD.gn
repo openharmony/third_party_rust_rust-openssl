@@ -28,11 +28,11 @@ ohos_cargo_crate("lib") {
     "//third_party/rust/crates/bitflags:lib",
     "//third_party/rust/crates/cfg-if:lib",
     "//third_party/rust/crates/foreign-types/foreign-types/:lib",
-    "//third_party/rust/crates/libc:lib",
     "//third_party/rust/crates/once_cell:lib",
     "//third_party/rust/crates/rust-openssl/openssl-macros:lib_macros(${host_toolchain})",
     "//third_party/rust/crates/rust-openssl/openssl-sys:lib_sys",
   ]
+  external_deps = [ "rust_libc:lib" ]
   module_output_extension = ".rlib"
   features = [ "default" ]
   install_enable = false

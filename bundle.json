@@ -24,7 +24,8 @@
     "ram": "~200KB",
     "deps": {
       "components": [
-        "openssl"
+        "openssl",
+        "rust_libc"
       ],
       "third_party": []
     },
