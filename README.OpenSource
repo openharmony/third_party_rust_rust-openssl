@@ -3,7 +3,7 @@
     "Name": "rust-openssl",
     "License": "Apache-2.0",
     "License File": "THIRD_PARTY",
-    "Version Number": "0.10.56",
+    "Version Number": "0.10.73",
     "Owner": "xuelei3@huawei.com",
     "Upstream URL": "https://github.com/sfackler/rust-openssl",
     "Description": "OpenSSL bindings for Rust",

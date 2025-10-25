@@ -19,8 +19,9 @@
 //! openssl = { version = "0.10", features = ["vendored"] }
 //! ```
 //!
-//! The vendored copy will not be configured to automatically find the system's root certificates, but the
-//! `openssl-probe` crate can be used to do that instead.
+//! The vendored copy will be configured to automatically find a configuration and root certificates at `/usr/local/ssl`.
+//! This path can be overridden with an environment variable (see the manual section below).
+//! Alternatively, the `openssl-probe` crate can be used to find root certificates at runtime.
 //!
 //! ## Automatic
 //!
@@ -38,16 +39,19 @@
 //! $ sudo pkgin install openssl
 //!
 //! # Arch Linux
-//! $ sudo pacman -S pkg-config openssl
+//! $ sudo pacman -S pkgconf openssl
 //!
 //! # Debian and Ubuntu
 //! $ sudo apt-get install pkg-config libssl-dev
 //!
 //! # Fedora
-//! $ sudo dnf install pkg-config openssl-devel
+//! $ sudo dnf install pkgconf perl-FindBin perl-IPC-Cmd openssl-devel
 //!
 //! # Alpine Linux
-//! $ apk add pkgconfig openssl-dev
+//! $ apk add pkgconf openssl-dev
+//!
+//! # openSUSE
+//! $ sudo zypper in libopenssl-devel
 //! ```
 //!
 //! ## Manual
@@ -56,13 +60,19 @@
 //! override the automatic detection logic.
 //!
 //! * `OPENSSL_DIR` - If specified, the directory of an OpenSSL installation. The directory should contain `lib` and
-//!    `include` subdirectories containing the libraries and headers respectively.
+//!   `include` subdirectories containing the libraries and headers respectively.
 //! * `OPENSSL_LIB_DIR` and `OPENSSL_INCLUDE_DIR` - If specified, the directories containing the OpenSSL libraries and
-//!    headers respectively. This can be used if the OpenSSL installation is split in a nonstandard directory layout.
+//!   headers respectively. This can be used if the OpenSSL installation is split in a nonstandard directory layout.
 //! * `OPENSSL_STATIC` - If set, the crate will statically link to OpenSSL rather than dynamically link.
 //! * `OPENSSL_LIBS` - If set, a `:`-separated list of library names to link to (e.g. `ssl:crypto`). This can be used
-//!    if nonstandard library names were used for whatever reason.
+//!   if nonstandard library names were used for whatever reason.
 //! * `OPENSSL_NO_VENDOR` - If set, always find OpenSSL in the system, even if the `vendored` feature is enabled.
+//!
+//! If the `vendored` Cargo feature is enabled, the following environment variable can also be used to further configure
+//! the OpenSSL build.
+//!
+//! * `OPENSSL_CONFIG_DIR` - If set, the copy of OpenSSL built by the `openssl-src` crate will be configured to look for
+//!   configuration files and root certificates in this directory.
 //!
 //! Additionally, these variables can be prefixed with the upper-cased target architecture (e.g.
 //!     `X86_64_UNKNOWN_LINUX_GNU_OPENSSL_DIR`), which can be useful when cross compiling.
@@ -124,9 +134,11 @@
 #[doc(inline)]
 pub use ffi::init;
 
-use libc::c_int;
-
 extern crate openssl_sys as ffi;
+use libc::c_int;
+#[cfg(ossl300)]
+use libc::c_long;
+
 use crate::error::ErrorStack;
 
 #[macro_use]
@@ -141,7 +153,7 @@ pub mod base64;
 pub mod bn;
 pub mod cipher;
 pub mod cipher_ctx;
-#[cfg(all(not(boringssl), not(libressl), not(osslconf = "OPENSSL_NO_CMS")))]
+#[cfg(all(not(libressl), not(osslconf = "OPENSSL_NO_CMS")))]
 pub mod cms;
 pub mod conf;
 pub mod derive;
@@ -150,24 +162,25 @@ pub mod dsa;
 pub mod ec;
 pub mod ecdsa;
 pub mod encrypt;
-#[cfg(not(boringssl))]
+#[cfg(not(any(boringssl, awslc)))]
 pub mod envelope;
 pub mod error;
 pub mod ex_data;
 #[cfg(not(any(libressl, ossl300)))]
 pub mod fips;
 pub mod hash;
+pub mod kdf;
 #[cfg(ossl300)]
 pub mod lib_ctx;
 pub mod md;
 pub mod md_ctx;
 pub mod memcmp;
 pub mod nid;
-#[cfg(not(any(boringssl, osslconf = "OPENSSL_NO_OCSP")))]
+#[cfg(not(osslconf = "OPENSSL_NO_OCSP"))]
 pub mod ocsp;
 pub mod pkcs12;
 pub mod pkcs5;
-#[cfg(not(boringssl))]
+#[cfg(not(any(boringssl, awslc)))]
 pub mod pkcs7;
 pub mod pkey;
 pub mod pkey_ctx;
@@ -185,14 +198,14 @@ pub mod symm;
 pub mod version;
 pub mod x509;
 
-#[cfg(boringssl)]
+#[cfg(any(boringssl, awslc))]
 type LenType = libc::size_t;
-#[cfg(not(boringssl))]
+#[cfg(not(any(boringssl, awslc)))]
 type LenType = libc::c_int;
 
-#[cfg(boringssl)]
+#[cfg(any(boringssl, awslc))]
 type SLenType = libc::ssize_t;
-#[cfg(not(boringssl))]
+#[cfg(not(any(boringssl, awslc)))]
 type SLenType = libc::c_int;
 
 #[inline]
@@ -205,7 +218,29 @@ fn cvt_p<T>(r: *mut T) -> Result<*mut T, ErrorStack> {
 }
 
 #[inline]
+fn cvt_p_const<T>(r: *const T) -> Result<*const T, ErrorStack> {
+    if r.is_null() {
+        Err(ErrorStack::get())
+    } else {
+        Ok(r)
+    }
+}
+
+#[inline]
 fn cvt(r: c_int) -> Result<c_int, ErrorStack> {
+    if r <= 0 {
+        Err(ErrorStack::get())
+    } else {
+        Ok(r)
+    }
+}
+
+// cvt_long is currently only used in functions that require openssl >= 3.0.0,
+// so this cfg statement is used to avoid "unused function" errors when
+// compiling with openssl < 3.0.0
+#[inline]
+#[cfg(ossl300)]
+fn cvt_long(r: c_long) -> Result<c_long, ErrorStack> {
     if r <= 0 {
         Err(ErrorStack::get())
     } else {

@@ -2,6 +2,171 @@
 
 ## [Unreleased]
 
+## [v0.9.109] - 2025-05-28
+
+### Fixed
+
+* Fixed building with `vcpkg`, a statically linked OpenSSL, and rust 1.87.0.
+* Fixed building on the latest BoringSSL.
+
+## [v0.9.108] - 2025-04-30
+
+### Added
+
+* Added support for LibreSSL 4.1.x.
+
+## [v0.9.107] - 2025-04-04
+
+### Added
+
+* Support for building with AWS-LC.
+
+## [v0.9.106] - 2025-02-15
+
+### Added
+
+* Support building with `OPENSSL_NO_RC2`.
+* Exposed `EVP_rc2_cbc` and `EVP_rc2_40_cbc`.
+
+## [v0.9.105] - 2025-02-02
+
+### Added
+
+* Added `DTLS_server_method` and `DTLS_client_method`.
+
+## [v0.9.104] - 2024-10-15
+
+### Added
+
+* Added support for LibreSSL 4.0.x.
+* Added `EVP_KDF_*` and `EVP_KDF_CTX_*` bindings.
+* Added `EVP_DigestSqueeze`.
+* Added `OSSL_PARAM_construct_octet_string`.
+* Added `OSSL_set_max_threads` and `OSSL_get_max_threads`.
+
+### Changed
+
+* `openssl-sys` is now a 2021 edition crate
+* Explicitly specify the MSRV in `Cargo.toml`
+* Raised the `bindgen` (optional) dependency from 0.65 to 0.69
+
+## [v0.9.103] - 2024-07-20
+
+### Added
+
+* Added several functions and constants for datagram `BIO`s.
+* Added `EVP_PKEY_set1_DSA`, `EVP_PKEY_set1_DH`, and `EVP_PKEY_set1_EC_KEY`.
+* Added several functions related to QUIC support.
+
+## [v0.9.102] - 2024-03-28
+
+### Added
+
+* Added support for LibreSSL 3.9.x.
+
+## [v0.9.101] - 2024-02-21
+
+### Fixed
+
+* Fixed a bug where, when building with the `vendored` feature, this crate always needed to be rebuilt.
+
+## [v0.9.100] - 2024-02-19
+
+### Added
+
+* Added `OSSL_PARAM`, `OSSL_PARAM_construct_uint` , `OSSL_PARAM_construct_end`.
+* Added `EVP_PKEY_CTX_set_params` and `EVP_PKEY_CTX_get_params`.
+* Added `X509_alias_get0`.
+* Added `EVP_default_properties_enable_fips`.
+
+## [v0.9.99] - 2024-01-19
+
+### Added
+
+* On macOS added Homebrew's `openssl@3.0` to the list of candidates to build against.
+* `NID_brainpoolP256r1`, `NID_brainpoolP320r1`, `NID_brainpoolP384r1`, and `NID_brainpoolP512r1` are now available on LibreSSL.
+
+### Changed
+
+* `X509_PURPOSE` is now opaque on LibreSSL 3.9.0+.
+
+## [v0.9.98] - 2023-12-22
+
+### Added
+
+* Added `RAND_priv_bytes`.
+* Added `NID_brainpoolP320r1`.
+
+### Changed
+
+* `X509_PURPOSE_get0` now returns a `const` pointer on LibreSSL 3.9.0+.
+* `X509V3_EXT_add_alias` is removed on LibreSSL 3.9.0+.
+
+## [v0.9.97] - 2023-12-04
+
+### Changed
+
+* libatomic is no longer dynamically linked for 32 bit ARM targets.
+
+### Added
+
+* Added `SSL_read_ex`, `SSL_peek_ex`, and `SSL_write_ex`.
+
+## [v0.9.96] - 2023-11-22
+
+### Changed
+
+* `EVP_chacha20` is now available on LibreSSL
+
+### Added
+
+* Added `EVP_des_ede3_ecb`, `EVP_des_ede3_cfb8`, `EVP_des_ede3_ofb`, `EVP_camellia_128_ofb`, `EVP_camellia_192_ofb`, `EVP_camellia_256_ofb`, `EVP_cast5_ofb`, `EVP_idea_ofb`
+* Added `X509_STORE_get1_all_certs`
+* Added `SSL_CTRL_GET_PEER_TMP_KEY`, `SSL_CTRL_GET_TMP_KEY`, `SSL_get_peer_tmp_key`, `SSL_get_tmp_key`
+
+## [v0.9.95] - 2023-11-03
+
+### Changed
+
+* Fixed the availability of `EVP_PKEY_RSA_PSS` on OpenSSL
+
+### Added
+
+* Added support for LibreSSL 3.8.x.
+* Added `NID_chacha20_poly1305`
+
+## [v0.9.94] - 2023-11-01
+
+### Changed
+
+* `X509_ALGOR` is now opaque on new LibreSSL releases
+
+### Added
+
+* Added support for building with `OPENSSL_NO_SCRYPT`
+* Added `EVP_PKEY_RSA_PSS` and `EVP_PKEY_DHX`
+* Functions and constants for using HKDF `EVP_PKEY` are now available on LibreSSL.
+* Added `SSL_CTX_set_security_level`, `SSL_set_security_level`, `SSL_CTX_get_security_level`, `SSL_get_security_level`
+* Added `X509_check_host`, `X509_check_email`, `X509_check_ip`, `X509_check_ip_asc`
+
+## [v0.9.93] - 2023-09-04
+
+### Changed
+
+* The `vendored` Cargo feature now builds OpenSSL 3.1, as 1.1.1 is reaching its EOL.
+
+### Added
+
+* Added support for LibreSSL 3.8.1.
+
+## [v0.9.92] - 2023-08-27
+
+### Added
+
+* Added `EVP_CIPHER_CTX_copy`
+* Expose `EVP_chacha20_poly1305` on LibreSSL
+* Added `X509_VERIFY_PARAM_set1_email`
+
 ## [v0.9.91] - 2023-08-06
 
 ### Added
@@ -490,7 +655,25 @@ Fixed builds against OpenSSL built with `no-cast`.
 * Added `X509_verify` and `X509_REQ_verify`.
 * Added `EVP_MD_type` and `EVP_GROUP_get_curve_name`.
 
-[Unreleased]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.91..master
+[Unreleased]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.109..master
+[v0.9.109]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.108...openssl-sys-v0.9.109
+[v0.9.108]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.107...openssl-sys-v0.9.108
+[v0.9.107]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.106...openssl-sys-v0.9.107
+[v0.9.106]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.105...openssl-sys-v0.9.106
+[v0.9.105]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.104...openssl-sys-v0.9.105
+[v0.9.104]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.103...openssl-sys-v0.9.104
+[v0.9.103]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.102...openssl-sys-v0.9.103
+[v0.9.102]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.101...openssl-sys-v0.9.102
+[v0.9.101]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.100...openssl-sys-v0.9.101
+[v0.9.100]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.99...openssl-sys-v0.9.100
+[v0.9.99]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.98...openssl-sys-v0.9.99
+[v0.9.98]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.97...openssl-sys-v0.9.98
+[v0.9.97]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.96...openssl-sys-v0.9.97
+[v0.9.96]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.95...openssl-sys-v0.9.96
+[v0.9.95]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.94...openssl-sys-v0.9.95
+[v0.9.94]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.93...openssl-sys-v0.9.94
+[v0.9.93]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.92...openssl-sys-v0.9.93
+[v0.9.92]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.91...openssl-sys-v0.9.92
 [v0.9.91]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.90...openssl-sys-v0.9.91
 [v0.9.90]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.89...openssl-sys-v0.9.90
 [v0.9.89]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.88...openssl-sys-v0.9.89

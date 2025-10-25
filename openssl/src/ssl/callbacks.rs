@@ -10,7 +10,7 @@ use libc::{c_int, c_uchar, c_uint, c_void};
 use std::ffi::CStr;
 use std::mem;
 use std::ptr;
-#[cfg(ossl111)]
+#[cfg(any(ossl111, boringssl, awslc))]
 use std::str;
 use std::sync::Arc;
 
@@ -19,7 +19,7 @@ use crate::dh::Dh;
 use crate::ec::EcKey;
 use crate::error::ErrorStack;
 use crate::pkey::Params;
-#[cfg(any(ossl102, libressl261))]
+#[cfg(any(ossl102, libressl261, boringssl, awslc))]
 use crate::ssl::AlpnError;
 use crate::ssl::{
     try_get_session_ctx_index, SniError, Ssl, SslAlert, SslContext, SslContextRef, SslRef,
@@ -28,7 +28,7 @@ use crate::ssl::{
 #[cfg(ossl111)]
 use crate::ssl::{ClientHelloResponse, ExtensionContext};
 use crate::util;
-#[cfg(ossl111)]
+#[cfg(any(ossl111, boringssl, awslc))]
 use crate::util::ForeignTypeRefExt;
 #[cfg(ossl111)]
 use crate::x509::X509Ref;
@@ -86,6 +86,7 @@ where
         };
         // Give the callback mutable slices into which it can write the identity and psk.
         let identity_sl = util::from_raw_parts_mut(identity as *mut u8, max_identity_len as usize);
+        #[allow(clippy::unnecessary_cast)]
         let psk_sl = util::from_raw_parts_mut(psk as *mut u8, max_psk_len as usize);
         match (*callback)(ssl, hint, identity_sl, psk_sl) {
             Ok(psk_len) => psk_len as u32,
@@ -124,6 +125,7 @@ where
             Some(CStr::from_ptr(identity).to_bytes())
         };
         // Give the callback mutable slices into which it can write the psk.
+        #[allow(clippy::unnecessary_cast)]
         let psk_sl = util::from_raw_parts_mut(psk as *mut u8, max_psk_len as usize);
         match (*callback)(ssl, identity, psk_sl) {
             Ok(psk_len) => psk_len as u32,
@@ -176,7 +178,7 @@ where
     }
 }
 
-#[cfg(any(ossl102, libressl261))]
+#[cfg(any(ossl102, libressl261, boringssl, awslc))]
 pub extern "C" fn raw_alpn_select<F>(
     ssl: *mut ffi::SSL,
     out: *mut *const c_uchar,
@@ -194,6 +196,7 @@ where
             .ssl_context()
             .ex_data(SslContext::cached_ex_index::<F>())
             .expect("BUG: alpn callback missing") as *const F;
+        #[allow(clippy::unnecessary_cast)]
         let protos = util::from_raw_parts(inbuf as *const u8, inlen as usize);
 
         match (*callback)(ssl, protos) {
@@ -388,7 +391,7 @@ pub unsafe extern "C" fn raw_remove_session<F>(
 }
 
 cfg_if! {
-    if #[cfg(any(ossl110, libressl280, boringssl))] {
+    if #[cfg(any(ossl110, libressl280, boringssl, awslc))] {
         type DataPtr = *const c_uchar;
     } else {
         type DataPtr = *mut c_uchar;
@@ -412,6 +415,7 @@ where
         .expect("BUG: session context missing")
         .ex_data(SslContext::cached_ex_index::<F>())
         .expect("BUG: get session callback missing") as *const F;
+    #[allow(clippy::unnecessary_cast)]
     let data = util::from_raw_parts(data as *const u8, len as usize);
 
     match (*callback)(ssl, data) {
@@ -425,7 +429,7 @@ where
     }
 }
 
-#[cfg(ossl111)]
+#[cfg(any(ossl111, boringssl, awslc))]
 pub unsafe extern "C" fn raw_keylog<F>(ssl: *const ffi::SSL, line: *const c_char)
 where
     F: Fn(&SslRef, &str) + 'static + Sync + Send,
@@ -455,6 +459,7 @@ where
         .ssl_context()
         .ex_data(SslContext::cached_ex_index::<F>())
         .expect("BUG: stateless cookie generate callback missing") as *const F;
+    #[allow(clippy::unnecessary_cast)]
     let slice = util::from_raw_parts_mut(cookie as *mut u8, ffi::SSL_COOKIE_LENGTH as usize);
     match (*callback)(ssl, slice) {
         Ok(len) => {
@@ -482,11 +487,12 @@ where
         .ssl_context()
         .ex_data(SslContext::cached_ex_index::<F>())
         .expect("BUG: stateless cookie verify callback missing") as *const F;
+    #[allow(clippy::unnecessary_cast)]
     let slice = util::from_raw_parts(cookie as *const c_uchar as *const u8, cookie_len);
     (*callback)(ssl, slice) as c_int
 }
 
-#[cfg(not(boringssl))]
+#[cfg(not(any(boringssl, awslc)))]
 pub extern "C" fn raw_cookie_generate<F>(
     ssl: *mut ffi::SSL,
     cookie: *mut c_uchar,
@@ -503,6 +509,7 @@ where
             .expect("BUG: cookie generate callback missing") as *const F;
         // We subtract 1 from DTLS1_COOKIE_LENGTH as the ostensible value, 256, is erroneous but retained for
         // compatibility. See comments in dtls1.h.
+        #[allow(clippy::unnecessary_cast)]
         let slice =
             util::from_raw_parts_mut(cookie as *mut u8, ffi::DTLS1_COOKIE_LENGTH as usize - 1);
         match (*callback)(ssl, slice) {
@@ -518,7 +525,7 @@ where
     }
 }
 
-#[cfg(not(boringssl))]
+#[cfg(not(any(boringssl, awslc)))]
 cfg_if! {
     if #[cfg(any(ossl110, libressl280))] {
         type CookiePtr = *const c_uchar;
@@ -527,7 +534,7 @@ cfg_if! {
     }
 }
 
-#[cfg(not(boringssl))]
+#[cfg(not(any(boringssl, awslc)))]
 pub extern "C" fn raw_cookie_verify<F>(
     ssl: *mut ffi::SSL,
     cookie: CookiePtr,
@@ -542,6 +549,7 @@ where
             .ssl_context()
             .ex_data(SslContext::cached_ex_index::<F>())
             .expect("BUG: cookie verify callback missing") as *const F;
+        #[allow(clippy::unnecessary_cast)]
         let slice =
             util::from_raw_parts(cookie as *const c_uchar as *const u8, cookie_len as usize);
         (*callback)(ssl, slice) as c_int
@@ -654,6 +662,7 @@ where
             .ex_data(SslContext::cached_ex_index::<F>())
             .expect("BUG: custom ext parse callback missing") as *const F;
         let ectx = ExtensionContext::from_bits_truncate(context);
+        #[allow(clippy::unnecessary_cast)]
         let slice = util::from_raw_parts(input as *const u8, inlen);
         let cert = if ectx.contains(ExtensionContext::TLS1_3_CERTIFICATE) {
             Some((chainidx, X509Ref::from_ptr(x)))

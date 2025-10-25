@@ -226,6 +226,8 @@ impl Pkcs12Builder {
     pub fn build2(&self, password: &str) -> Result<Pkcs12, ErrorStack> {
         unsafe {
             let pass = CString::new(password).unwrap();
+            #[cfg(not(boringssl))]
+            let pass_len = pass.as_bytes().len();
             let pass = pass.as_ptr();
             let friendly_name = self.name.as_ref().map_or(ptr::null(), |p| p.as_ptr());
             let pkey = self.pkey.as_ref().map_or(ptr::null(), |p| p.as_ptr());
@@ -259,7 +261,7 @@ impl Pkcs12Builder {
 
             #[cfg(not(boringssl))]
             // BoringSSL does not support overriding the MAC and will always
-            // use SHA-1
+            // use SHA-1.
             {
                 let md_type = self
                     .mac_md
@@ -269,7 +271,7 @@ impl Pkcs12Builder {
                 cvt(ffi::PKCS12_set_mac(
                     pkcs12.as_ptr(),
                     pass,
-                    -1,
+                    pass_len.try_into().unwrap(),
                     ptr::null_mut(),
                     0,
                     self.mac_iter,
@@ -304,8 +306,19 @@ mod test {
         let parsed = pkcs12.parse2("mypass").unwrap();
 
         assert_eq!(
-            hex::encode(parsed.cert.unwrap().digest(MessageDigest::sha1()).unwrap()),
+            hex::encode(
+                parsed
+                    .cert
+                    .as_ref()
+                    .unwrap()
+                    .digest(MessageDigest::sha1())
+                    .unwrap()
+            ),
             "59172d9313e84459bcff27f967e79e6e9217e584"
+        );
+        assert_eq!(
+            parsed.cert.as_ref().unwrap().alias(),
+            Some(b"foobar.com" as &[u8])
         );
 
         let chain = parsed.ca.unwrap();

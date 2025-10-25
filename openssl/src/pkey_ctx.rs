@@ -21,7 +21,7 @@
 //! ```
 
 #![cfg_attr(
-    not(boringssl),
+    not(any(boringssl, awslc)),
     doc = r#"\
 Generate a CMAC key
 
@@ -64,7 +64,7 @@ let cmac_key = ctx.keygen().unwrap();
 //! let valid = ctx.verify(text, &signature).unwrap();
 //! assert!(valid);
 //! ```
-#[cfg(not(boringssl))]
+#[cfg(not(any(boringssl, awslc)))]
 use crate::cipher::CipherRef;
 use crate::error::ErrorStack;
 use crate::md::MdRef;
@@ -73,17 +73,21 @@ use crate::rsa::Padding;
 use crate::sign::RsaPssSaltlen;
 use crate::{cvt, cvt_p};
 use foreign_types::{ForeignType, ForeignTypeRef};
-#[cfg(not(boringssl))]
+#[cfg(not(any(boringssl, awslc)))]
 use libc::c_int;
+#[cfg(ossl320)]
+use libc::c_uint;
 use openssl_macros::corresponds;
 use std::convert::TryFrom;
+#[cfg(ossl320)]
+use std::ffi::CStr;
 use std::ptr;
 
 /// HKDF modes of operation.
-#[cfg(ossl111)]
+#[cfg(any(ossl111, libressl360))]
 pub struct HkdfMode(c_int);
 
-#[cfg(ossl111)]
+#[cfg(any(ossl111, libressl360))]
 impl HkdfMode {
     /// This is the default mode. Calling [`derive`][PkeyCtxRef::derive] on a [`PkeyCtxRef`] set up
     /// for HKDF will perform an extract followed by an expand operation in one go. The derived key
@@ -103,6 +107,21 @@ impl HkdfMode {
     ///
     /// The digest, key and info values must be set before a key is derived or an error occurs.
     pub const EXPAND_ONLY: Self = HkdfMode(ffi::EVP_PKEY_HKDEF_MODE_EXPAND_ONLY);
+}
+
+/// Nonce type for ECDSA and DSA.
+#[cfg(ossl320)]
+#[derive(Debug, PartialEq)]
+pub struct NonceType(c_uint);
+
+#[cfg(ossl320)]
+impl NonceType {
+    /// This is the default mode. It uses a random value for the nonce k as defined in FIPS 186-4 Section 6.3
+    /// “Secret Number Generation”.
+    pub const RANDOM_K: Self = NonceType(0);
+
+    /// Uses a deterministic value for the nonce k as defined in RFC #6979 (See Section 3.2 “Generation of k”).
+    pub const DETERMINISTIC_K: Self = NonceType(1);
 }
 
 generic_foreign_type_and_impl_send_sync! {
@@ -129,7 +148,7 @@ impl<T> PkeyCtx<T> {
 
 impl PkeyCtx<()> {
     /// Creates a new pkey context for the specified algorithm ID.
-    #[corresponds(EVP_PKEY_new_id)]
+    #[corresponds(EVP_PKEY_CTX_new_id)]
     #[inline]
     pub fn new_id(id: Id) -> Result<Self, ErrorStack> {
         unsafe {
@@ -482,7 +501,7 @@ impl<T> PkeyCtxRef<T> {
     ///
     /// This is only useful for RSA keys.
     #[corresponds(EVP_PKEY_CTX_set_rsa_oaep_md)]
-    #[cfg(any(ossl102, libressl310, boringssl))]
+    #[cfg(any(ossl102, libressl310, boringssl, awslc))]
     #[inline]
     pub fn set_rsa_oaep_md(&mut self, md: &MdRef) -> Result<(), ErrorStack> {
         unsafe {
@@ -499,7 +518,7 @@ impl<T> PkeyCtxRef<T> {
     ///
     /// This is only useful for RSA keys.
     #[corresponds(EVP_PKEY_CTX_set0_rsa_oaep_label)]
-    #[cfg(any(ossl102, libressl310, boringssl))]
+    #[cfg(any(ossl102, libressl310, boringssl, awslc))]
     pub fn set_rsa_oaep_label(&mut self, label: &[u8]) -> Result<(), ErrorStack> {
         use crate::LenType;
         let len = LenType::try_from(label.len()).unwrap();
@@ -523,7 +542,7 @@ impl<T> PkeyCtxRef<T> {
     }
 
     /// Sets the cipher used during key generation.
-    #[cfg(not(boringssl))]
+    #[cfg(not(any(boringssl, awslc)))]
     #[corresponds(EVP_PKEY_CTX_ctrl)]
     #[inline]
     pub fn set_keygen_cipher(&mut self, cipher: &CipherRef) -> Result<(), ErrorStack> {
@@ -542,7 +561,7 @@ impl<T> PkeyCtxRef<T> {
     }
 
     /// Sets the key MAC key used during key generation.
-    #[cfg(not(boringssl))]
+    #[cfg(not(any(boringssl, awslc)))]
     #[corresponds(EVP_PKEY_CTX_ctrl)]
     #[inline]
     pub fn set_keygen_mac_key(&mut self, key: &[u8]) -> Result<(), ErrorStack> {
@@ -566,7 +585,7 @@ impl<T> PkeyCtxRef<T> {
     ///
     /// Requires OpenSSL 1.1.0 or newer.
     #[corresponds(EVP_PKEY_CTX_set_hkdf_md)]
-    #[cfg(any(ossl110, boringssl))]
+    #[cfg(any(ossl110, boringssl, libressl360, awslc))]
     #[inline]
     pub fn set_hkdf_md(&mut self, digest: &MdRef) -> Result<(), ErrorStack> {
         unsafe {
@@ -589,7 +608,7 @@ impl<T> PkeyCtxRef<T> {
     ///
     /// Requires OpenSSL 1.1.1 or newer.
     #[corresponds(EVP_PKEY_CTX_set_hkdf_mode)]
-    #[cfg(ossl111)]
+    #[cfg(any(ossl111, libressl360))]
     #[inline]
     pub fn set_hkdf_mode(&mut self, mode: HkdfMode) -> Result<(), ErrorStack> {
         unsafe {
@@ -608,12 +627,12 @@ impl<T> PkeyCtxRef<T> {
     ///
     /// Requires OpenSSL 1.1.0 or newer.
     #[corresponds(EVP_PKEY_CTX_set1_hkdf_key)]
-    #[cfg(any(ossl110, boringssl))]
+    #[cfg(any(ossl110, boringssl, libressl360, awslc))]
     #[inline]
     pub fn set_hkdf_key(&mut self, key: &[u8]) -> Result<(), ErrorStack> {
-        #[cfg(not(boringssl))]
+        #[cfg(not(any(boringssl, awslc)))]
         let len = c_int::try_from(key.len()).unwrap();
-        #[cfg(boringssl)]
+        #[cfg(any(boringssl, awslc))]
         let len = key.len();
 
         unsafe {
@@ -633,12 +652,12 @@ impl<T> PkeyCtxRef<T> {
     ///
     /// Requires OpenSSL 1.1.0 or newer.
     #[corresponds(EVP_PKEY_CTX_set1_hkdf_salt)]
-    #[cfg(any(ossl110, boringssl))]
+    #[cfg(any(ossl110, boringssl, libressl360, awslc))]
     #[inline]
     pub fn set_hkdf_salt(&mut self, salt: &[u8]) -> Result<(), ErrorStack> {
-        #[cfg(not(boringssl))]
+        #[cfg(not(any(boringssl, awslc)))]
         let len = c_int::try_from(salt.len()).unwrap();
-        #[cfg(boringssl)]
+        #[cfg(any(boringssl, awslc))]
         let len = salt.len();
 
         unsafe {
@@ -658,12 +677,12 @@ impl<T> PkeyCtxRef<T> {
     ///
     /// Requires OpenSSL 1.1.0 or newer.
     #[corresponds(EVP_PKEY_CTX_add1_hkdf_info)]
-    #[cfg(any(ossl110, boringssl))]
+    #[cfg(any(ossl110, boringssl, libressl360, awslc))]
     #[inline]
     pub fn add_hkdf_info(&mut self, info: &[u8]) -> Result<(), ErrorStack> {
-        #[cfg(not(boringssl))]
+        #[cfg(not(any(boringssl, awslc)))]
         let len = c_int::try_from(info.len()).unwrap();
-        #[cfg(boringssl)]
+        #[cfg(any(boringssl, awslc))]
         let len = info.len();
 
         unsafe {
@@ -714,12 +733,59 @@ impl<T> PkeyCtxRef<T> {
             Ok(PKey::from_ptr(key))
         }
     }
+
+    /// Sets the nonce type for a private key context.
+    ///
+    /// The nonce for DSA and ECDSA can be either random (the default) or deterministic (as defined by RFC 6979).
+    ///
+    /// This is only useful for DSA and ECDSA.
+    /// Requires OpenSSL 3.2.0 or newer.
+    #[cfg(ossl320)]
+    #[corresponds(EVP_PKEY_CTX_set_params)]
+    pub fn set_nonce_type(&mut self, nonce_type: NonceType) -> Result<(), ErrorStack> {
+        let nonce_field_name = CStr::from_bytes_with_nul(b"nonce-type\0").unwrap();
+        let mut nonce_type = nonce_type.0;
+        unsafe {
+            let param_nonce =
+                ffi::OSSL_PARAM_construct_uint(nonce_field_name.as_ptr(), &mut nonce_type);
+            let param_end = ffi::OSSL_PARAM_construct_end();
+
+            let params = [param_nonce, param_end];
+            cvt(ffi::EVP_PKEY_CTX_set_params(self.as_ptr(), params.as_ptr()))?;
+        }
+        Ok(())
+    }
+
+    /// Gets the nonce type for a private key context.
+    ///
+    /// The nonce for DSA and ECDSA can be either random (the default) or deterministic (as defined by RFC 6979).
+    ///
+    /// This is only useful for DSA and ECDSA.
+    /// Requires OpenSSL 3.2.0 or newer.
+    #[cfg(ossl320)]
+    #[corresponds(EVP_PKEY_CTX_get_params)]
+    pub fn nonce_type(&mut self) -> Result<NonceType, ErrorStack> {
+        let nonce_field_name = CStr::from_bytes_with_nul(b"nonce-type\0").unwrap();
+        let mut nonce_type: c_uint = 0;
+        unsafe {
+            let param_nonce =
+                ffi::OSSL_PARAM_construct_uint(nonce_field_name.as_ptr(), &mut nonce_type);
+            let param_end = ffi::OSSL_PARAM_construct_end();
+
+            let mut params = [param_nonce, param_end];
+            cvt(ffi::EVP_PKEY_CTX_get_params(
+                self.as_ptr(),
+                params.as_mut_ptr(),
+            ))?;
+        }
+        Ok(NonceType(nonce_type))
+    }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    #[cfg(not(boringssl))]
+    #[cfg(not(any(boringssl, awslc)))]
     use crate::cipher::Cipher;
     use crate::ec::{EcGroup, EcKey};
     use crate::hash::{hash, MessageDigest};
@@ -753,7 +819,7 @@ mod test {
     }
 
     #[test]
-    #[cfg(any(ossl102, libressl310, boringssl))]
+    #[cfg(any(ossl102, libressl310, boringssl, awslc))]
     fn rsa_oaep() {
         let key = include_bytes!("../test/rsa.pem");
         let rsa = Rsa::private_key_from_pem(key).unwrap();
@@ -844,7 +910,7 @@ mod test {
     }
 
     #[test]
-    #[cfg(not(boringssl))]
+    #[cfg(not(any(boringssl, awslc)))]
     fn cmac_keygen() {
         let mut ctx = PkeyCtx::new_id(Id::CMAC).unwrap();
         ctx.keygen_init().unwrap();
@@ -855,7 +921,7 @@ mod test {
     }
 
     #[test]
-    #[cfg(any(ossl110, boringssl))]
+    #[cfg(any(ossl110, boringssl, libressl360, awslc))]
     fn hkdf() {
         let mut ctx = PkeyCtx::new_id(Id::HKDF).unwrap();
         ctx.derive_init().unwrap();
@@ -877,7 +943,7 @@ mod test {
     }
 
     #[test]
-    #[cfg(ossl111)]
+    #[cfg(any(ossl111, libressl360))]
     fn hkdf_expand() {
         let mut ctx = PkeyCtx::new_id(Id::HKDF).unwrap();
         ctx.derive_init().unwrap();
@@ -901,7 +967,7 @@ mod test {
     }
 
     #[test]
-    #[cfg(ossl111)]
+    #[cfg(any(ossl111, libressl360))]
     fn hkdf_extract() {
         let mut ctx = PkeyCtx::new_id(Id::HKDF).unwrap();
         ctx.derive_init().unwrap();
@@ -998,5 +1064,47 @@ mod test {
         assert_eq!(length, 51);
         // The digest is the end of the DigestInfo structure.
         assert_eq!(result_buf[length - digest.len()..length], digest);
+    }
+
+    #[test]
+    #[cfg(ossl320)]
+    fn set_nonce_type() {
+        let key1 =
+            EcKey::generate(&EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap()).unwrap();
+        let key1 = PKey::from_ec_key(key1).unwrap();
+
+        let mut ctx = PkeyCtx::new(&key1).unwrap();
+        ctx.sign_init().unwrap();
+        ctx.set_nonce_type(NonceType::DETERMINISTIC_K).unwrap();
+        let nonce_type = ctx.nonce_type().unwrap();
+        assert_eq!(nonce_type, NonceType::DETERMINISTIC_K);
+        assert!(ErrorStack::get().errors().is_empty());
+    }
+
+    // Test vector from
+    // https://github.com/openssl/openssl/blob/openssl-3.2.0/test/recipes/30-test_evp_data/evppkey_ecdsa_rfc6979.txt
+    #[test]
+    #[cfg(ossl320)]
+    fn ecdsa_deterministic_signature() {
+        let private_key_pem = "-----BEGIN PRIVATE KEY-----
+MEECAQAwEwYHKoZIzj0CAQYIKoZIzj0DAQcEJzAlAgEBBCDJr6nYRbp1FmtcIVdnsdaTTlDD2zbo
+mxJ7imIrEg9nIQ==
+-----END PRIVATE KEY-----";
+
+        let key1 = EcKey::private_key_from_pem(private_key_pem.as_bytes()).unwrap();
+        let key1 = PKey::from_ec_key(key1).unwrap();
+        let input = "sample";
+        let expected_output = hex::decode("3044022061340C88C3AAEBEB4F6D667F672CA9759A6CCAA9FA8811313039EE4A35471D3202206D7F147DAC089441BB2E2FE8F7A3FA264B9C475098FDCF6E00D7C996E1B8B7EB").unwrap();
+
+        let hashed_input = hash(MessageDigest::sha1(), input.as_bytes()).unwrap();
+        let mut ctx = PkeyCtx::new(&key1).unwrap();
+        ctx.sign_init().unwrap();
+        ctx.set_signature_md(Md::sha1()).unwrap();
+        ctx.set_nonce_type(NonceType::DETERMINISTIC_K).unwrap();
+
+        let mut output = vec![];
+        ctx.sign_to_vec(&hashed_input, &mut output).unwrap();
+        assert_eq!(output, expected_output);
+        assert!(ErrorStack::get().errors().is_empty());
     }
 }

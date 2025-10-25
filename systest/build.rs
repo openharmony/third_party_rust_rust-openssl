@@ -7,7 +7,7 @@ use std::env;
 mod cfgs;
 
 fn main() {
-    let mut cfg = ctest2::TestGenerator::new();
+    let mut cfg = ctest::TestGenerator::new();
     let target = env::var("TARGET").unwrap();
 
     if let Ok(out) = env::var("DEP_OPENSSL_INCLUDE") {
@@ -69,8 +69,11 @@ fn main() {
         .header("openssl/evp.h")
         .header("openssl/x509_vfy.h");
 
-    if libressl_version.is_some() {
+    if let Some(version) = libressl_version {
         cfg.header("openssl/poly1305.h");
+        if version >= 0x30600000 {
+            cfg.header("openssl/kdf.h");
+        }
     }
 
     if let Some(version) = openssl_version {
@@ -81,6 +84,9 @@ fn main() {
 
         if version >= 0x30000000 {
             cfg.header("openssl/provider.h");
+        }
+        if version >= 0x30200000 {
+            cfg.header("openssl/thread.h");
         }
     }
 
@@ -100,7 +106,7 @@ fn main() {
             && s.chars().next().unwrap().is_lowercase()
         {
             format!("struct {}", s)
-        } else if s.starts_with("stack_st_") {
+        } else if s.starts_with("stack_st_") || s == "timeval" {
             format!("struct {}", s)
         } else {
             s.to_string()

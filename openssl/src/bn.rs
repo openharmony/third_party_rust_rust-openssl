@@ -37,18 +37,15 @@ use crate::{cvt, cvt_n, cvt_p, LenType};
 use openssl_macros::corresponds;
 
 cfg_if! {
-    if #[cfg(any(ossl110, libressl350))] {
+    if #[cfg(any(ossl110, libressl350, awslc))] {
         use ffi::{
-            BN_get_rfc2409_prime_1024, BN_get_rfc2409_prime_768, BN_get_rfc3526_prime_1536,
-            BN_get_rfc3526_prime_2048, BN_get_rfc3526_prime_3072, BN_get_rfc3526_prime_4096,
+            BN_get_rfc3526_prime_1536, BN_get_rfc3526_prime_2048, BN_get_rfc3526_prime_3072, BN_get_rfc3526_prime_4096,
             BN_get_rfc3526_prime_6144, BN_get_rfc3526_prime_8192, BN_is_negative,
         };
     } else if #[cfg(boringssl)] {
         use ffi::BN_is_negative;
     } else {
         use ffi::{
-            get_rfc2409_prime_1024 as BN_get_rfc2409_prime_1024,
-            get_rfc2409_prime_768 as BN_get_rfc2409_prime_768,
             get_rfc3526_prime_1536 as BN_get_rfc3526_prime_1536,
             get_rfc3526_prime_2048 as BN_get_rfc3526_prime_2048,
             get_rfc3526_prime_3072 as BN_get_rfc3526_prime_3072,
@@ -61,6 +58,19 @@ cfg_if! {
         unsafe fn BN_is_negative(bn: *const ffi::BIGNUM) -> c_int {
             (*bn).neg
         }
+    }
+}
+
+cfg_if! {
+    if #[cfg(any(ossl110, libressl350))] {
+        use ffi::{
+            BN_get_rfc2409_prime_1024, BN_get_rfc2409_prime_768
+        };
+    } else if #[cfg(not(any(boringssl, awslc)))] {
+        use ffi::{
+            get_rfc2409_prime_1024 as BN_get_rfc2409_prime_1024,
+            get_rfc2409_prime_768 as BN_get_rfc2409_prime_768,
+        };
     }
 }
 
@@ -187,7 +197,7 @@ impl BigNumRef {
     pub fn div_word(&mut self, w: u32) -> Result<u64, ErrorStack> {
         unsafe {
             let r = ffi::BN_div_word(self.as_ptr(), w.into());
-            if r == ffi::BN_ULONG::max_value() {
+            if r == ffi::BN_ULONG::MAX {
                 Err(ErrorStack::get())
             } else {
                 Ok(r.into())
@@ -201,7 +211,7 @@ impl BigNumRef {
     pub fn mod_word(&self, w: u32) -> Result<u64, ErrorStack> {
         unsafe {
             let r = ffi::BN_mod_word(self.as_ptr(), w.into());
-            if r == ffi::BN_ULONG::max_value() {
+            if r == ffi::BN_ULONG::MAX {
                 Err(ErrorStack::get())
             } else {
                 Ok(r.into())
@@ -337,14 +347,14 @@ impl BigNumRef {
 
     /// Returns `true` is `self` is even.
     #[corresponds(BN_is_even)]
-    #[cfg(any(ossl110, boringssl, libressl350))]
+    #[cfg(any(ossl110, boringssl, libressl350, awslc))]
     pub fn is_even(&self) -> bool {
         !self.is_odd()
     }
 
     /// Returns `true` is `self` is odd.
     #[corresponds(BN_is_odd)]
-    #[cfg(any(ossl110, boringssl, libressl350))]
+    #[cfg(any(ossl110, boringssl, libressl350, awslc))]
     pub fn is_odd(&self) -> bool {
         unsafe { ffi::BN_is_odd(self.as_ptr()) == 1 }
     }
@@ -655,7 +665,6 @@ impl BigNumRef {
 
     /// Places into `self` the modular square root of `a` such that `self^2 = a (mod p)`
     #[corresponds(BN_mod_sqrt)]
-    #[cfg(ossl110)]
     pub fn mod_sqrt(
         &mut self,
         a: &BigNumRef,
@@ -848,7 +857,7 @@ impl BigNumRef {
     /// assert_eq!(&bn_vec, &[0, 0, 0x45, 0x43]);
     /// ```
     #[corresponds(BN_bn2binpad)]
-    #[cfg(any(ossl110, libressl340, boringssl))]
+    #[cfg(any(ossl110, libressl340, boringssl, awslc))]
     pub fn to_vec_padded(&self, pad_to: i32) -> Result<Vec<u8>, ErrorStack> {
         let mut v = Vec::with_capacity(pad_to as usize);
         unsafe {
@@ -987,7 +996,7 @@ impl BigNum {
     ///
     /// [`RFC 2409`]: https://tools.ietf.org/html/rfc2409#page-21
     #[corresponds(BN_get_rfc2409_prime_768)]
-    #[cfg(not(boringssl))]
+    #[cfg(not(any(boringssl, awslc)))]
     pub fn get_rfc2409_prime_768() -> Result<BigNum, ErrorStack> {
         unsafe {
             ffi::init();
@@ -1001,7 +1010,7 @@ impl BigNum {
     ///
     /// [`RFC 2409`]: https://tools.ietf.org/html/rfc2409#page-21
     #[corresponds(BN_get_rfc2409_prime_1024)]
-    #[cfg(not(boringssl))]
+    #[cfg(not(any(boringssl, awslc)))]
     pub fn get_rfc2409_prime_1024() -> Result<BigNum, ErrorStack> {
         unsafe {
             ffi::init();
@@ -1109,7 +1118,7 @@ impl BigNum {
     pub fn from_slice(n: &[u8]) -> Result<BigNum, ErrorStack> {
         unsafe {
             ffi::init();
-            assert!(n.len() <= LenType::max_value() as usize);
+            assert!(n.len() <= LenType::MAX as usize);
 
             cvt_p(ffi::BN_bin2bn(
                 n.as_ptr(),
@@ -1137,7 +1146,7 @@ impl BigNum {
     #[corresponds(BN_bin2bn)]
     pub fn copy_from_slice(&mut self, n: &[u8]) -> Result<(), ErrorStack> {
         unsafe {
-            assert!(n.len() <= LenType::max_value() as usize);
+            assert!(n.len() <= LenType::MAX as usize);
 
             cvt_p(ffi::BN_bin2bn(n.as_ptr(), n.len() as LenType, self.0))?;
             Ok(())
@@ -1229,7 +1238,7 @@ impl Ord for BigNumRef {
 
 impl PartialOrd for BigNum {
     fn partial_cmp(&self, oth: &BigNum) -> Option<Ordering> {
-        self.deref().partial_cmp(oth.deref())
+        Some(self.cmp(oth))
     }
 }
 
@@ -1273,7 +1282,7 @@ macro_rules! delegate {
     };
 }
 
-impl<'a, 'b> Add<&'b BigNumRef> for &'a BigNumRef {
+impl Add<&BigNumRef> for &BigNumRef {
     type Output = BigNum;
 
     fn add(self, oth: &BigNumRef) -> BigNum {
@@ -1285,7 +1294,7 @@ impl<'a, 'b> Add<&'b BigNumRef> for &'a BigNumRef {
 
 delegate!(Add, add);
 
-impl<'a, 'b> Sub<&'b BigNumRef> for &'a BigNumRef {
+impl Sub<&BigNumRef> for &BigNumRef {
     type Output = BigNum;
 
     fn sub(self, oth: &BigNumRef) -> BigNum {
@@ -1297,7 +1306,7 @@ impl<'a, 'b> Sub<&'b BigNumRef> for &'a BigNumRef {
 
 delegate!(Sub, sub);
 
-impl<'a, 'b> Mul<&'b BigNumRef> for &'a BigNumRef {
+impl Mul<&BigNumRef> for &BigNumRef {
     type Output = BigNum;
 
     fn mul(self, oth: &BigNumRef) -> BigNum {
@@ -1310,7 +1319,7 @@ impl<'a, 'b> Mul<&'b BigNumRef> for &'a BigNumRef {
 
 delegate!(Mul, mul);
 
-impl<'a, 'b> Div<&'b BigNumRef> for &'a BigNumRef {
+impl<'b> Div<&'b BigNumRef> for &BigNumRef {
     type Output = BigNum;
 
     fn div(self, oth: &'b BigNumRef) -> BigNum {
@@ -1323,7 +1332,7 @@ impl<'a, 'b> Div<&'b BigNumRef> for &'a BigNumRef {
 
 delegate!(Div, div);
 
-impl<'a, 'b> Rem<&'b BigNumRef> for &'a BigNumRef {
+impl<'b> Rem<&'b BigNumRef> for &BigNumRef {
     type Output = BigNum;
 
     fn rem(self, oth: &'b BigNumRef) -> BigNum {
@@ -1336,7 +1345,7 @@ impl<'a, 'b> Rem<&'b BigNumRef> for &'a BigNumRef {
 
 delegate!(Rem, rem);
 
-impl<'a> Shl<i32> for &'a BigNumRef {
+impl Shl<i32> for &BigNumRef {
     type Output = BigNum;
 
     fn shl(self, n: i32) -> BigNum {
@@ -1346,7 +1355,7 @@ impl<'a> Shl<i32> for &'a BigNumRef {
     }
 }
 
-impl<'a> Shl<i32> for &'a BigNum {
+impl Shl<i32> for &BigNum {
     type Output = BigNum;
 
     fn shl(self, n: i32) -> BigNum {
@@ -1354,7 +1363,7 @@ impl<'a> Shl<i32> for &'a BigNum {
     }
 }
 
-impl<'a> Shr<i32> for &'a BigNumRef {
+impl Shr<i32> for &BigNumRef {
     type Output = BigNum;
 
     fn shr(self, n: i32) -> BigNum {
@@ -1364,7 +1373,7 @@ impl<'a> Shr<i32> for &'a BigNumRef {
     }
 }
 
-impl<'a> Shr<i32> for &'a BigNum {
+impl Shr<i32> for &BigNum {
     type Output = BigNum;
 
     fn shr(self, n: i32) -> BigNum {
@@ -1372,7 +1381,7 @@ impl<'a> Shr<i32> for &'a BigNum {
     }
 }
 
-impl<'a> Neg for &'a BigNumRef {
+impl Neg for &BigNumRef {
     type Output = BigNum;
 
     fn neg(self) -> BigNum {
@@ -1380,7 +1389,7 @@ impl<'a> Neg for &'a BigNumRef {
     }
 }
 
-impl<'a> Neg for &'a BigNum {
+impl Neg for &BigNum {
     type Output = BigNum;
 
     fn neg(self) -> BigNum {
@@ -1490,21 +1499,27 @@ mod tests {
         assert!(b.is_const_time())
     }
 
-    #[cfg(ossl110)]
     #[test]
     fn test_mod_sqrt() {
         let mut ctx = BigNumContext::new().unwrap();
 
-        let s = BigNum::from_hex_str("47A8DD7626B9908C80ACD7E0D3344D69").unwrap();
-        let p = BigNum::from_hex_str("81EF47265B58BCE5").unwrap();
+        let s = BigNum::from_hex_str("2").unwrap();
+        let p = BigNum::from_hex_str("7DEB1").unwrap();
+        let mut sqrt = BigNum::new().unwrap();
         let mut out = BigNum::new().unwrap();
 
-        out.mod_sqrt(&s, &p, &mut ctx).unwrap();
-        assert_eq!(out, BigNum::from_hex_str("7C6D179E19B97BDD").unwrap());
+        // Square the root because OpenSSL randomly returns one of 2E42C or 4FA85
+        sqrt.mod_sqrt(&s, &p, &mut ctx).unwrap();
+        out.mod_sqr(&sqrt, &p, &mut ctx).unwrap();
+        assert!(out == s);
+
+        let s = BigNum::from_hex_str("3").unwrap();
+        let p = BigNum::from_hex_str("5").unwrap();
+        assert!(out.mod_sqrt(&s, &p, &mut ctx).is_err());
     }
 
     #[test]
-    #[cfg(any(ossl110, boringssl, libressl350))]
+    #[cfg(any(ossl110, boringssl, libressl350, awslc))]
     fn test_odd_even() {
         let a = BigNum::from_u32(17).unwrap();
         let b = BigNum::from_u32(18).unwrap();
