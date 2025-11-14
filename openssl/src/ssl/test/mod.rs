@@ -10,16 +10,16 @@ use std::net::UdpSocket;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
 use crate::dh::Dh;
 use crate::error::ErrorStack;
 use crate::hash::MessageDigest;
-#[cfg(not(boringssl))]
+#[cfg(not(any(boringssl, awslc)))]
 use crate::ocsp::{OcspResponse, OcspResponseStatus};
-use crate::pkey::PKey;
+use crate::pkey::{Id, PKey};
 use crate::srtp::SrtpProfileId;
 use crate::ssl::test::server::Server;
 #[cfg(any(ossl110, ossl111, libressl261))]
@@ -264,7 +264,7 @@ fn set_ctx_options() {
 }
 
 #[test]
-#[cfg(not(boringssl))]
+#[cfg(not(any(boringssl, awslc)))]
 fn clear_ctx_options() {
     let mut ctx = SslContext::builder(SslMethod::tls()).unwrap();
     ctx.set_options(SslOptions::ALL);
@@ -309,17 +309,69 @@ fn pending() {
 
 #[test]
 fn state() {
+    const EXPECTED_STATE_STRING_LONG: &str = "SSL negotiation finished successfully";
+
     let server = Server::builder().build();
 
     let s = server.client().connect();
-    #[cfg(not(boringssl))]
+    #[cfg(not(any(boringssl, awslc)))]
     assert_eq!(s.ssl().state_string().trim(), "SSLOK");
     #[cfg(boringssl)]
     assert_eq!(s.ssl().state_string(), "!!!!!!");
-    assert_eq!(
-        s.ssl().state_string_long(),
-        "SSL negotiation finished successfully"
+    #[cfg(awslc)]
+    assert_eq!(s.ssl().state_string(), EXPECTED_STATE_STRING_LONG);
+
+    assert_eq!(s.ssl().state_string_long(), EXPECTED_STATE_STRING_LONG);
+}
+
+// when a connection uses ECDHE P-384 key exchange, then the temp key APIs
+// return P-384 keys, and the peer and local keys are different.
+#[test]
+#[cfg(ossl300)]
+fn peer_tmp_key_p384() {
+    let mut server = Server::builder();
+    server.ctx().set_groups_list("P-384").unwrap();
+    let server = server.build();
+    let s = server.client().connect();
+    let peer_temp = s.ssl().peer_tmp_key().unwrap();
+    assert_eq!(peer_temp.id(), Id::EC);
+    assert_eq!(peer_temp.bits(), 384);
+
+    let local_temp = s.ssl().tmp_key().unwrap();
+    assert_eq!(local_temp.id(), Id::EC);
+    assert_eq!(local_temp.bits(), 384);
+
+    assert_ne!(
+        peer_temp.ec_key().unwrap().public_key_to_der().unwrap(),
+        local_temp.ec_key().unwrap().public_key_to_der().unwrap(),
     );
+}
+
+// when a connection uses RSA key exchange, then the peer (server) temp key is
+// an Error because there is no temp key, and the local (client) temp key is the
+// temp key sent in the initial key share.
+#[test]
+#[cfg(ossl300)]
+fn peer_tmp_key_rsa() {
+    let mut server = Server::builder();
+    server.ctx().set_cipher_list("RSA").unwrap();
+    // RSA key exchange is not allowed in TLS 1.3, so force the connection
+    // to negotiate TLS 1.2
+    server
+        .ctx()
+        .set_max_proto_version(Some(SslVersion::TLS1_2))
+        .unwrap();
+    let server = server.build();
+    let mut client = server.client();
+    client.ctx().set_groups_list("P-521").unwrap();
+    let s = client.connect();
+    let peer_temp = s.ssl().peer_tmp_key();
+    assert!(peer_temp.is_err());
+
+    // this is the temp key that the client sent in the initial key share
+    let local_temp = s.ssl().tmp_key().unwrap();
+    assert_eq!(local_temp.id(), Id::EC);
+    assert_eq!(local_temp.bits(), 521);
 }
 
 /// Tests that when both the client as well as the server use SRTP and their
@@ -452,7 +504,7 @@ fn test_connect_with_srtp_ssl() {
 /// Tests that when the `SslStream` is created as a server stream, the protocols
 /// are correctly advertised to the client.
 #[test]
-#[cfg(any(ossl102, libressl261))]
+#[cfg(any(ossl102, libressl261, boringssl, awslc))]
 fn test_alpn_server_advertise_multiple() {
     let mut server = Server::builder();
     server.ctx().set_alpn_select_callback(|_, client| {
@@ -467,7 +519,7 @@ fn test_alpn_server_advertise_multiple() {
 }
 
 #[test]
-#[cfg(ossl110)]
+#[cfg(any(ossl110, boringssl, awslc))]
 fn test_alpn_server_select_none_fatal() {
     let mut server = Server::builder();
     server.ctx().set_alpn_select_callback(|_, client| {
@@ -483,7 +535,7 @@ fn test_alpn_server_select_none_fatal() {
 }
 
 #[test]
-#[cfg(any(ossl102, libressl261))]
+#[cfg(any(ossl102, libressl261, boringssl, awslc))]
 fn test_alpn_server_select_none() {
     static CALLED_BACK: AtomicBool = AtomicBool::new(false);
 
@@ -502,7 +554,7 @@ fn test_alpn_server_select_none() {
 }
 
 #[test]
-#[cfg(any(ossl102, libressl261))]
+#[cfg(any(boringssl, ossl102, libressl261, awslc))]
 fn test_alpn_server_unilateral() {
     let server = Server::builder().build();
 
@@ -917,7 +969,7 @@ fn cert_store() {
 }
 
 #[test]
-#[cfg_attr(any(all(libressl321, not(libressl340)), boringssl), ignore)]
+#[cfg_attr(any(all(libressl321, not(libressl340)), boringssl, awslc), ignore)]
 fn tmp_dh_callback() {
     static CALLED_BACK: AtomicBool = AtomicBool::new(false);
 
@@ -965,7 +1017,7 @@ fn tmp_ecdh_callback() {
 }
 
 #[test]
-#[cfg_attr(any(all(libressl321, not(libressl340)), boringssl), ignore)]
+#[cfg_attr(any(all(libressl321, not(libressl340)), boringssl, awslc), ignore)]
 fn tmp_dh_callback_ssl() {
     static CALLED_BACK: AtomicBool = AtomicBool::new(false);
 
@@ -1023,7 +1075,9 @@ fn idle_session() {
     assert!(ssl.session().is_none());
 }
 
-/// possible LibreSSL bug since 3.2.1
+/// LibreSSL 3.2.1 enabled TLSv1.3 by default for clients and sessions do
+/// not work due to lack of PSK support. The test passes with NO_TLSV1_3,
+/// but let's ignore it until LibreSSL supports it out of the box.
 #[test]
 #[cfg_attr(libressl321, ignore)]
 fn active_session() {
@@ -1042,7 +1096,7 @@ fn active_session() {
 }
 
 #[test]
-#[cfg(not(boringssl))]
+#[cfg(not(any(boringssl, awslc)))]
 fn status_callbacks() {
     static CALLED_BACK_SERVER: AtomicBool = AtomicBool::new(false);
     static CALLED_BACK_CLIENT: AtomicBool = AtomicBool::new(false);
@@ -1081,7 +1135,9 @@ fn status_callbacks() {
     assert!(CALLED_BACK_CLIENT.load(Ordering::SeqCst));
 }
 
-/// possible LibreSSL bug since 3.2.1
+/// LibreSSL 3.2.1 enabled TLSv1.3 by default for clients and sessions do
+/// not work due to lack of PSK support. The test passes with NO_TLSV1_3,
+/// but let's ignore it until LibreSSL supports it out of the box.
 #[test]
 #[cfg_attr(libressl321, ignore)]
 fn new_session_callback() {
@@ -1106,7 +1162,9 @@ fn new_session_callback() {
     assert!(CALLED_BACK.load(Ordering::SeqCst));
 }
 
-/// possible LibreSSL bug since 3.2.1
+/// LibreSSL 3.2.1 enabled TLSv1.3 by default for clients and sessions do
+/// not work due to lack of PSK support. The test passes with NO_TLSV1_3,
+/// but let's ignore it until LibreSSL supports it out of the box.
 #[test]
 #[cfg_attr(libressl321, ignore)]
 fn new_session_callback_swapped_ctx() {
@@ -1311,20 +1369,20 @@ fn stateless() {
 
     pub struct Outgoing<'a>(&'a mut Vec<u8>);
 
-    impl<'a> Drop for Outgoing<'a> {
+    impl Drop for Outgoing<'_> {
         fn drop(&mut self) {
             self.0.clear();
         }
     }
 
-    impl<'a> ::std::ops::Deref for Outgoing<'a> {
+    impl ::std::ops::Deref for Outgoing<'_> {
         type Target = [u8];
         fn deref(&self) -> &[u8] {
             self.0
         }
     }
 
-    impl<'a> AsRef<[u8]> for Outgoing<'a> {
+    impl AsRef<[u8]> for Outgoing<'_> {
         fn as_ref(&self) -> &[u8] {
             self.0
         }
@@ -1404,7 +1462,7 @@ fn psk_ciphers() {
 
     let mut client = server.client();
     // This test relies on TLS 1.2 suites
-    #[cfg(any(boringssl, ossl111))]
+    #[cfg(any(boringssl, ossl111, awslc))]
     client.ctx().set_options(super::SslOptions::NO_TLSV1_3);
     client.ctx().set_cipher_list(CIPHER).unwrap();
     client
@@ -1567,4 +1625,65 @@ fn set_num_tickets() {
     ssl.set_num_tickets(5).unwrap();
     let ssl = ssl;
     assert_eq!(5, ssl.num_tickets());
+}
+
+#[test]
+#[cfg(ossl110)]
+fn set_security_level() {
+    let mut ctx = SslContext::builder(SslMethod::tls_server()).unwrap();
+    ctx.set_security_level(3);
+    let ctx = ctx.build();
+    assert_eq!(3, ctx.security_level());
+
+    let mut ssl = Ssl::new(&ctx).unwrap();
+    ssl.set_security_level(4);
+    let ssl = ssl;
+    assert_eq!(4, ssl.security_level());
+}
+
+#[test]
+fn ssl_ctx_ex_data_leak() {
+    static DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    struct DropTest;
+
+    impl Drop for DropTest {
+        fn drop(&mut self) {
+            DROPS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    let idx = SslContext::new_ex_index().unwrap();
+
+    let mut ctx = SslContext::builder(SslMethod::tls()).unwrap();
+    ctx.set_ex_data(idx, DropTest);
+    ctx.set_ex_data(idx, DropTest);
+    assert_eq!(DROPS.load(Ordering::Relaxed), 1);
+
+    drop(ctx);
+    assert_eq!(DROPS.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn ssl_ex_data_leak() {
+    static DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    struct DropTest;
+
+    impl Drop for DropTest {
+        fn drop(&mut self) {
+            DROPS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    let idx = Ssl::new_ex_index().unwrap();
+
+    let ctx = SslContext::builder(SslMethod::tls()).unwrap().build();
+    let mut ssl = Ssl::new(&ctx).unwrap();
+    ssl.set_ex_data(idx, DropTest);
+    ssl.set_ex_data(idx, DropTest);
+    assert_eq!(DROPS.load(Ordering::Relaxed), 1);
+
+    drop(ssl);
+    assert_eq!(DROPS.load(Ordering::Relaxed), 2);
 }
