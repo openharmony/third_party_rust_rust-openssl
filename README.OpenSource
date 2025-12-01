@@ -8,7 +8,11 @@
     "Upstream URL": "https://github.com/sfackler/rust-openssl",
     "Description": "OpenSSL bindings for Rust",
     "Dependencies": [
-      "foreign-types"
+      "bitflags",
+      "cfg-if",
+      "foreign-types",
+      "libc",
+      "once_cell"
     ]
   }
 ]
