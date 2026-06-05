@@ -54,6 +54,10 @@ impl ErrorStack {
             error.put();
         }
     }
+
+    pub(crate) fn internal_error(message: &'static str) -> ErrorStack {
+        ErrorStack(vec![Error::new_internal(message)])
+    }
 }
 
 impl ErrorStack {
@@ -156,6 +160,21 @@ impl Error {
                         data,
                     })
                 }
+            }
+        }
+    }
+
+    pub(crate) fn new_internal(message: &'static str) -> Error {
+        unsafe {
+            Error {
+                code: 0,
+                file: ShimStr::new(
+                    CStr::from_bytes_with_nul_unchecked(b"<rust-openssl>\0")
+                        .as_ptr(),
+                ),
+                line: 0,
+                func: None,
+                data: Some(Cow::Borrowed(message)),
             }
         }
     }
